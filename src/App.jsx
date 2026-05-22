@@ -1,0 +1,536 @@
+import { useState, useEffect } from "react";
+
+// ── Framework 정의 ────────────────────────────────────────────────
+const FRAMEWORK = {
+  Process: {
+    color: "#4ECDC4", bg: "#0d2e2c",
+    items: ["업무 프로세스 재설계","현장 운영 방식 개선","Human-in-the-loop 운영","업무 자동화 프로세스","변화 관리 및 현업 정착"]
+  },
+  Data: {
+    color: "#FFE66D", bg: "#2e2a0d",
+    items: ["데이터 수집/연계","데이터 정제/표준화","데이터 통합/저장 구조","데이터 라벨링/어노테이션","지식 데이터/문서 자산화","피처/임베딩 자산관리"]
+  },
+  Infra: {
+    color: "#A8E6CF", bg: "#0d2e1a",
+    items: ["클라우드/서버/GPU 인프라","AI/ML 플랫폼","데이터 플랫폼 인프라","IT/OT 연계 인프라","API/서비스 연계 인프라","DevOps/MLOps 운영 인프라","보안 인프라"]
+  },
+  "AI Application": {
+    color: "#FF6B9D", bg: "#2e0d1a",
+    items: ["예측 모델","최적화 모델","Vision AI","NLP/텍스트 분석","GenAI/RAG 서비스","AI Agent","추천/개인화 서비스","모델 운영/성능 개선"]
+  },
+  Governance: {
+    color: "#C3A6FF", bg: "#1a0d2e",
+    items: ["AI 거버넌스","데이터 거버넌스","거버넌스 조직/역할체계","권한/접근 통제 정책","보안/개인정보/컴플라이언스","모델 리스크 관리","표준/가이드라인","성과/투자관리 기준"]
+  }
+};
+
+const CATEGORY_CODES = {
+  Process: "P", Data: "D", Infra: "I", "AI Application": "A", Governance: "G"
+};
+
+const STATUS_STYLES = {
+  "대기중":  { color: "#94a3b8", dot: "#64748b" },
+  "진행중":  { color: "#60a5fa", dot: "#3b82f6" },
+  "검토중":  { color: "#fb923c", dot: "#f97316" },
+  "완료":    { color: "#4ade80", dot: "#22c55e" },
+  "보류":    { color: "#f87171", dot: "#ef4444" },
+};
+
+const PRIORITY_COLORS = { High: "#ff4d6d", Medium: "#ffd60a", Low: "#4cc9f0" };
+
+// ── LLM 분류 호출 ────────────────────────────────────────────────
+async function classifyWithLLM(taskData) {
+  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("VITE_ANTHROPIC_API_KEY가 설정되지 않았습니다. .env 파일을 확인하세요.");
+
+  const frameworkText = Object.entries(FRAMEWORK)
+    .map(([cat, { items }]) =>
+      `[${cat}]\n${items.map((it, i) => `  ${CATEGORY_CODES[cat]}-0${i + 1}: ${it}`).join("\n")}`
+    )
+    .join("\n\n");
+
+  const prompt = `당신은 AI Readiness Framework 전문가입니다.
+아래 Framework 기준으로 Task를 분류하고, 반드시 JSON만 반환하세요.
+
+=== AI Readiness Framework ===
+${frameworkText}
+
+=== Task 정보 ===
+제목: ${taskData.title}
+배경/목적: ${taskData.background}
+요청 내용: ${taskData.request}
+기대 결과: ${taskData.expected}
+
+=== 출력 형식 (JSON만, 설명 없이) ===
+{
+  "primary_category": "카테고리명",
+  "primary_code": "코드(예: A-05)",
+  "primary_sub": "세부분류명",
+  "secondary_category": "카테고리명 또는 null",
+  "secondary_code": "코드 또는 null",
+  "secondary_sub": "세부분류명 또는 null",
+  "classification_note": "분류 근거 한 줄 (한국어, 50자 이내)"
+}`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-calls": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1000,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `API 오류 (${res.status})`);
+  }
+
+  const data = await res.json();
+  const text = data.content?.map((b) => b.text || "").join("") || "";
+  const clean = text.replace(/```json|```/g, "").trim();
+  return JSON.parse(clean);
+}
+
+// ── 빈 폼 ───────────────────────────────────────────────────────
+const emptyForm = () => ({
+  title: "", requester: "", owner: "",
+  due_date: "", status: "대기중", priority: "Medium",
+  effort_estimate: "M", tags: "",
+  background: "", request: "", as_is: "", to_be: "", constraints: "",
+});
+
+// ── MD Export 유틸 ───────────────────────────────────────────────
+function taskToMarkdown(task) {
+  const tagList = Array.isArray(task.tags) ? task.tags : [];
+  return `---
+id: "${task.id}"
+title: "${task.title}"
+requester: "${task.requester || ""}"
+owner: "${task.owner || ""}"
+created_date: "${task.created_date}"
+due_date: "${task.due_date || ""}"
+status: "${task.status}"
+primary_category: "${task.primary_category || ""}"
+primary_code: "${task.primary_code || ""}"
+secondary_category: "${task.secondary_category || ""}"
+secondary_code: "${task.secondary_code || ""}"
+classification_note: "${task.classification_note || ""}"
+priority: "${task.priority}"
+effort_estimate: "${task.effort_estimate}"
+tags: [${tagList.map((t) => `"${t}"`).join(", ")}]
+---
+
+# ${task.id}: ${task.title}
+
+## 배경 및 목적
+${task.background || ""}
+
+## 요청 내용
+${task.request || ""}
+
+## 현재 상황 (As-Is)
+${task.as_is || ""}
+
+## 기대 결과 (To-Be)
+${task.to_be || ""}
+
+## 제약 조건 / 참고사항
+${task.constraints || ""}
+
+---
+
+## 진행 이력
+
+| 날짜 | 내용 | 작성자 |
+|------|------|--------|
+${(task.history || []).map((h) => `| ${h.date} | ${h.content} | ${h.author} |`).join("\n")}
+`;
+}
+
+function downloadMD(task) {
+  const blob = new Blob([taskToMarkdown(task)], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${task.id}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ════════════════════════════════════════════════════════════════
+// 메인 앱
+// ════════════════════════════════════════════════════════════════
+export default function App() {
+  const [view, setView] = useState("dashboard"); // dashboard | form | detail
+  const [tasks, setTasks] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("ai_tasks") || "[]"); }
+    catch { return []; }
+  });
+  const [form, setForm] = useState(emptyForm());
+  const [classifying, setClassifying] = useState(false);
+  const [classResult, setClassResult] = useState(null);
+  const [selectedTask, setSelectedTask] = useState(null);
+  const [filterCat, setFilterCat] = useState("전체");
+  const [filterStatus, setFilterStatus] = useState("전체");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    localStorage.setItem("ai_tasks", JSON.stringify(tasks));
+  }, [tasks]);
+
+  const handleSave = async () => {
+    if (!form.title.trim()) { setError("제목은 필수입니다."); return; }
+    setError("");
+    setSaving(true);
+    setClassifying(true);
+    setClassResult(null);
+    try {
+      const cls = await classifyWithLLM(form);
+      setClassResult(cls);
+      const newTask = {
+        id: `TASK-${String(tasks.length + 1).padStart(3, "0")}`,
+        ...form,
+        tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean),
+        created_date: new Date().toISOString().split("T")[0],
+        history: [{ date: new Date().toISOString().split("T")[0], content: "Task 생성", author: form.owner || "-" }],
+        ...cls,
+      };
+      setTasks((prev) => [newTask, ...prev]);
+      setForm(emptyForm());
+      setClassifying(false);
+      setSaving(false);
+      setTimeout(() => { setClassResult(null); setView("dashboard"); }, 2500);
+    } catch (e) {
+      setError(e.message || "LLM 분류 중 오류가 발생했습니다.");
+      setClassifying(false);
+      setSaving(false);
+    }
+  };
+
+  const filteredTasks = tasks.filter((t) => {
+    const catOk = filterCat === "전체" || t.primary_category === filterCat;
+    const stOk = filterStatus === "전체" || t.status === filterStatus;
+    return catOk && stOk;
+  });
+
+  const catCounts = Object.keys(FRAMEWORK).reduce((acc, cat) => {
+    acc[cat] = tasks.filter((t) => t.primary_category === cat).length;
+    return acc;
+  }, {});
+
+  const statusCounts = Object.keys(STATUS_STYLES).reduce((acc, s) => {
+    acc[s] = tasks.filter((t) => t.status === s).length;
+    return acc;
+  }, {});
+
+  const navTo = (v) => { setView(v); setSelectedTask(null); setClassResult(null); setError(""); };
+
+  // ── 렌더 ──────────────────────────────────────────────────────
+  return (
+    <div style={{ minHeight: "100vh", background: "#090e1a", color: "#e2e8f0", fontFamily: "'DM Sans', 'Noto Sans KR', sans-serif" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700&family=DM+Mono:wght@400;500&family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #0f1629; }
+        ::-webkit-scrollbar-thumb { background: #2a3a5c; border-radius: 3px; }
+        input, textarea, select { outline: none; font-family: inherit; }
+        .field { display: flex; flex-direction: column; gap: 6px; }
+        .label { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .08em; color: #64748b; }
+        .inp { background: #0f1629; border: 1px solid #1e2d4a; border-radius: 8px; color: #e2e8f0; padding: 10px 14px; font-size: 14px; width: 100%; transition: border .2s; }
+        .inp:focus { border-color: #4ECDC4; box-shadow: 0 0 0 2px rgba(78,205,196,.12); }
+        .inp::placeholder { color: #334155; }
+        textarea.inp { resize: vertical; min-height: 80px; line-height: 1.6; }
+        .btn-primary { background: linear-gradient(135deg,#4ECDC4,#2a9d8f); color: #fff; border: none; border-radius: 8px; padding: 12px 28px; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity .2s, transform .15s; letter-spacing: .02em; }
+        .btn-primary:hover:not(:disabled) { opacity: .9; transform: translateY(-1px); }
+        .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+        .btn-ghost { background: transparent; border: 1px solid #1e2d4a; border-radius: 8px; color: #94a3b8; padding: 10px 20px; font-size: 13px; cursor: pointer; transition: all .2s; }
+        .btn-ghost:hover { border-color: #4ECDC4; color: #4ECDC4; }
+        .btn-sm { background: transparent; border: 1px solid #1e2d4a; border-radius: 6px; color: #64748b; padding: 6px 12px; font-size: 12px; cursor: pointer; transition: all .2s; }
+        .btn-sm:hover { border-color: #4ECDC4; color: #4ECDC4; }
+        .card { background: #0f1629; border: 1px solid #1e2d4a; border-radius: 12px; padding: 20px; }
+        .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 500; }
+        .task-row { display: grid; grid-template-columns: 90px 1fr 160px 100px 80px 70px 36px; gap: 12px; align-items: center; padding: 14px 16px; border-bottom: 1px solid #0f1629; transition: background .15s; cursor: pointer; }
+        .task-row:hover { background: #111827; }
+        .spin { animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .fade-in { animation: fadeIn .4s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .cls-badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+      `}</style>
+
+      {/* ── 헤더 ── */}
+      <header style={{ borderBottom: "1px solid #1e2d4a", padding: "0 32px", height: 56, display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, background: "rgba(9,14,26,.95)", backdropFilter: "blur(12px)", zIndex: 100 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 28, height: 28, background: "linear-gradient(135deg,#4ECDC4,#FF6B9D)", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>⬡</div>
+          <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: ".02em" }}>AI Task Dashboard</span>
+        </div>
+        <nav style={{ display: "flex", gap: 6 }}>
+          {[["dashboard","📊 대시보드"], ["form","＋ Task 등록"]].map(([v, label]) => (
+            <button key={v} onClick={() => navTo(v)}
+              style={{ background: view === v ? "#1e2d4a" : "transparent", border: "none", color: view === v ? "#4ECDC4" : "#64748b", padding: "6px 16px", borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: "pointer", transition: "all .2s" }}>
+              {label}
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      <main style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 24px" }}>
+
+        {/* ══ 대시보드 ══ */}
+        {view === "dashboard" && !selectedTask && (
+          <div className="fade-in">
+            {/* KPI 카드 */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 24 }}>
+              {Object.entries(FRAMEWORK).map(([cat, { color, bg }]) => (
+                <div key={cat} onClick={() => setFilterCat(filterCat === cat ? "전체" : cat)}
+                  className="card" style={{ cursor: "pointer", borderColor: filterCat === cat ? color : "#1e2d4a", background: filterCat === cat ? bg : "#0f1629", transition: "all .2s" }}>
+                  <div style={{ fontSize: 24, fontWeight: 700, color, fontFamily: "'DM Mono',monospace" }}>{catCounts[cat] || 0}</div>
+                  <div style={{ fontSize: 11, color: "#64748b", marginTop: 4, fontWeight: 500 }}>{cat}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* 상태 필터 */}
+            <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+              {["전체", ...Object.keys(STATUS_STYLES)].map((s) => (
+                <button key={s} onClick={() => setFilterStatus(s)}
+                  className="pill" style={{ background: filterStatus === s ? "#1e2d4a" : "transparent", border: `1px solid ${filterStatus === s ? "#4ECDC4" : "#1e2d4a"}`, color: filterStatus === s ? "#4ECDC4" : "#64748b", cursor: "pointer", padding: "6px 14px", fontSize: 12 }}>
+                  {s !== "전체" && <span style={{ width: 6, height: 6, borderRadius: "50%", background: STATUS_STYLES[s].dot, display: "inline-block" }} />}
+                  {s}{s !== "전체" && statusCounts[s] > 0 && ` (${statusCounts[s]})`}
+                </button>
+              ))}
+            </div>
+
+            {/* Task 테이블 */}
+            <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "90px 1fr 160px 100px 80px 70px 36px", gap: 12, padding: "10px 16px", borderBottom: "1px solid #1e2d4a" }}>
+                {["ID","제목","분류","담당자","상태","우선순위",""].map((h, i) => (
+                  <div key={i} style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".08em", color: "#334155" }}>{h}</div>
+                ))}
+              </div>
+              {filteredTasks.length === 0 ? (
+                <div style={{ padding: "48px 16px", textAlign: "center", color: "#334155", fontSize: 13 }}>
+                  등록된 Task가 없습니다.&nbsp;
+                  <span style={{ color: "#4ECDC4", cursor: "pointer" }} onClick={() => navTo("form")}>Task를 등록해보세요 →</span>
+                </div>
+              ) : filteredTasks.map((t) => {
+                const catColor = FRAMEWORK[t.primary_category]?.color || "#64748b";
+                const st = STATUS_STYLES[t.status] || STATUS_STYLES["대기중"];
+                return (
+                  <div key={t.id} className="task-row">
+                    <span onClick={() => { setSelectedTask(t); setView("detail"); }} style={{ fontFamily: "'DM Mono',monospace", fontSize: 12, color: "#4ECDC4" }}>{t.id}</span>
+                    <div onClick={() => { setSelectedTask(t); setView("detail"); }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: "#e2e8f0", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.title}</div>
+                      {t.classification_note && <div style={{ fontSize: 11, color: "#475569", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.classification_note}</div>}
+                    </div>
+                    <div onClick={() => { setSelectedTask(t); setView("detail"); }}>
+                      <span className="cls-badge" style={{ background: `${catColor}18`, color: catColor, border: `1px solid ${catColor}30` }}>
+                        {t.primary_code} {t.primary_category}
+                      </span>
+                    </div>
+                    <span onClick={() => { setSelectedTask(t); setView("detail"); }} style={{ fontSize: 13, color: "#94a3b8" }}>{t.owner || "-"}</span>
+                    <span onClick={() => { setSelectedTask(t); setView("detail"); }} className="pill" style={{ background: `${st.dot}18`, color: st.color, border: `1px solid ${st.dot}30` }}>
+                      <span style={{ width: 5, height: 5, borderRadius: "50%", background: st.dot, display: "inline-block" }} />{t.status}
+                    </span>
+                    <span onClick={() => { setSelectedTask(t); setView("detail"); }} style={{ fontSize: 12, fontWeight: 600, color: PRIORITY_COLORS[t.priority] || "#94a3b8" }}>{t.priority}</span>
+                    <button className="btn-sm" onClick={(e) => { e.stopPropagation(); downloadMD(t); }} title="MD 다운로드" style={{ padding: "4px 8px" }}>↓</button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ══ 상세 뷰 ══ */}
+        {view === "detail" && selectedTask && (
+          <div className="fade-in">
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+              <button className="btn-ghost" onClick={() => { setView("dashboard"); setSelectedTask(null); }}>← 목록으로</button>
+              <button className="btn-sm" onClick={() => downloadMD(selectedTask)}>↓ MD 다운로드</button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 20 }}>
+              <div>
+                <div className="card" style={{ marginBottom: 16 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+                    <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 13, color: "#4ECDC4" }}>{selectedTask.id}</span>
+                    <span className="pill" style={{ background: `${STATUS_STYLES[selectedTask.status]?.dot}18`, color: STATUS_STYLES[selectedTask.status]?.color, border: `1px solid ${STATUS_STYLES[selectedTask.status]?.dot}30` }}>
+                      {selectedTask.status}
+                    </span>
+                  </div>
+                  <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 20, lineHeight: 1.4 }}>{selectedTask.title}</h2>
+                  {[["배경 및 목적", selectedTask.background], ["요청 내용", selectedTask.request], ["현재 상황 (As-Is)", selectedTask.as_is], ["기대 결과 (To-Be)", selectedTask.to_be], ["제약 조건", selectedTask.constraints]].map(([label, val]) => val && (
+                    <div key={label} style={{ marginBottom: 16 }}>
+                      <div className="label" style={{ marginBottom: 6 }}>{label}</div>
+                      <div style={{ fontSize: 14, color: "#94a3b8", lineHeight: 1.7, background: "#090e1a", padding: "10px 14px", borderRadius: 8 }}>{val}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                <div className="card">
+                  <div className="label" style={{ marginBottom: 12 }}>AI Readiness 분류</div>
+                  {(() => {
+                    const cat = selectedTask.primary_category;
+                    const color = FRAMEWORK[cat]?.color || "#64748b";
+                    return (
+                      <>
+                        <div className="cls-badge" style={{ background: `${color}18`, color, border: `1px solid ${color}30`, marginBottom: 8, fontSize: 13 }}>
+                          {selectedTask.primary_code} · {selectedTask.primary_sub || cat}
+                        </div>
+                        {selectedTask.secondary_category && (
+                          <div className="cls-badge" style={{ background: "#1e2d4a", color: "#64748b", border: "1px solid #2a3a5c", marginBottom: 8, fontSize: 12 }}>
+                            + {selectedTask.secondary_code} · {selectedTask.secondary_sub}
+                          </div>
+                        )}
+                        {selectedTask.classification_note && (
+                          <div style={{ fontSize: 12, color: "#475569", marginTop: 8, fontStyle: "italic", lineHeight: 1.6 }}>"{selectedTask.classification_note}"</div>
+                        )}
+                      </>
+                    );
+                  })()}
+                </div>
+                <div className="card">
+                  <div className="label" style={{ marginBottom: 10 }}>기본 정보</div>
+                  {[["요청자", selectedTask.requester], ["담당자", selectedTask.owner], ["등록일", selectedTask.created_date], ["마감일", selectedTask.due_date], ["우선순위", selectedTask.priority], ["규모", selectedTask.effort_estimate]].map(([k, v]) => v && (
+                    <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #1e2d4a", fontSize: 13 }}>
+                      <span style={{ color: "#475569" }}>{k}</span>
+                      <span style={{ color: "#94a3b8", fontWeight: 500 }}>{v}</span>
+                    </div>
+                  ))}
+                  {selectedTask.tags?.length > 0 && (
+                    <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {selectedTask.tags.map((tag) => (
+                        <span key={tag} style={{ background: "#1e2d4a", color: "#64748b", padding: "2px 8px", borderRadius: 4, fontSize: 11 }}>#{tag}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══ 등록 폼 ══ */}
+        {view === "form" && (
+          <div className="fade-in" style={{ maxWidth: 720, margin: "0 auto" }}>
+            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Task 등록</h2>
+            <p style={{ fontSize: 13, color: "#475569", marginBottom: 28 }}>저장 시 LLM이 AI Readiness Framework 기준으로 자동 분류합니다.</p>
+
+            {classResult && (
+              <div className="fade-in card" style={{ marginBottom: 20, borderColor: "#4ECDC4", background: "#0d2e2c" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <span style={{ fontSize: 16 }}>✦</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#4ECDC4" }}>LLM 분류 완료 — 대시보드로 이동합니다</span>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <span className="cls-badge" style={{ background: `${FRAMEWORK[classResult.primary_category]?.color}18`, color: FRAMEWORK[classResult.primary_category]?.color, border: `1px solid ${FRAMEWORK[classResult.primary_category]?.color}30` }}>
+                    {classResult.primary_code} · {classResult.primary_sub}
+                  </span>
+                  {classResult.secondary_category && (
+                    <span className="cls-badge" style={{ background: "#1e2d4a", color: "#64748b", border: "1px solid #2a3a5c" }}>
+                      + {classResult.secondary_code} · {classResult.secondary_sub}
+                    </span>
+                  )}
+                </div>
+                {classResult.classification_note && <div style={{ fontSize: 12, color: "#64748b", marginTop: 8, fontStyle: "italic" }}>"{classResult.classification_note}"</div>}
+              </div>
+            )}
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+              <div className="card">
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#334155", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 16 }}>기본 정보</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  <div className="field">
+                    <label className="label">제목 *</label>
+                    <input className="inp" placeholder="Task를 한 문장으로 표현하세요" value={form.title} onChange={(e) => setForm((p) => ({ ...p, title: e.target.value }))} />
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                    {[["requester","요청 부서/담당자","예: 고객서비스팀"], ["owner","담당자","예: 홍길동"]].map(([key, label, ph]) => (
+                      <div key={key} className="field">
+                        <label className="label">{label}</label>
+                        <input className="inp" placeholder={ph} value={form[key]} onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))} />
+                      </div>
+                    ))}
+                    <div className="field">
+                      <label className="label">마감일</label>
+                      <input className="inp" type="date" value={form.due_date} onChange={(e) => setForm((p) => ({ ...p, due_date: e.target.value }))} style={{ colorScheme: "dark" }} />
+                    </div>
+                    <div className="field">
+                      <label className="label">상태</label>
+                      <select className="inp" value={form.status} onChange={(e) => setForm((p) => ({ ...p, status: e.target.value }))}>
+                        {Object.keys(STATUS_STYLES).map((s) => <option key={s}>{s}</option>)}
+                      </select>
+                    </div>
+                    <div className="field">
+                      <label className="label">우선순위</label>
+                      <select className="inp" value={form.priority} onChange={(e) => setForm((p) => ({ ...p, priority: e.target.value }))}>
+                        {["High","Medium","Low"].map((p) => <option key={p}>{p}</option>)}
+                      </select>
+                    </div>
+                    <div className="field">
+                      <label className="label">규모 (S/M/L/XL)</label>
+                      <select className="inp" value={form.effort_estimate} onChange={(e) => setForm((p) => ({ ...p, effort_estimate: e.target.value }))}>
+                        {["S","M","L","XL"].map((e) => <option key={e}>{e}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="field">
+                    <label className="label">태그 (쉼표로 구분)</label>
+                    <input className="inp" placeholder="예: RAG, 파일럿, 2025-H2" value={form.tags} onChange={(e) => setForm((p) => ({ ...p, tags: e.target.value }))} />
+                  </div>
+                </div>
+              </div>
+
+              <div className="card" style={{ borderColor: "#1a2d4a" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#334155", textTransform: "uppercase", letterSpacing: ".06em" }}>Task 내용</div>
+                  <span style={{ fontSize: 10, color: "#4ECDC4", background: "#0d2e2c", padding: "2px 8px", borderRadius: 10, border: "1px solid #4ECDC430" }}>LLM 분류 기준</span>
+                </div>
+                <p style={{ fontSize: 11, color: "#334155", marginBottom: 16 }}>아래 내용이 자세할수록 분류 정확도가 높아집니다.</p>
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  {[
+                    ["background","배경 및 목적 *","왜 이 Task가 필요한지, 어떤 문제를 해결하는지"],
+                    ["request","요청 내용","구체적으로 무엇을 해달라는 것인지"],
+                    ["as_is","현재 상황 (As-Is)","현재 어떻게 하고 있는지"],
+                    ["to_be","기대 결과 (To-Be)","완료 시 어떤 상태가 되어야 하는지"],
+                    ["constraints","제약 조건/참고사항","예산, 일정, 시스템 제약 등"],
+                  ].map(([key, label, ph]) => (
+                    <div key={key} className="field">
+                      <label className="label">{label}</label>
+                      <textarea className="inp" placeholder={ph} value={form[key]} onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {error && (
+                <div style={{ color: "#f87171", fontSize: 13, padding: "10px 14px", background: "#1f0d0d", borderRadius: 8, border: "1px solid #ef444430" }}>{error}</div>
+              )}
+
+              <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+                <button className="btn-ghost" onClick={() => setForm(emptyForm())}>초기화</button>
+                <button className="btn-primary" onClick={handleSave} disabled={saving}>
+                  {saving ? (
+                    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span className="spin" style={{ display: "inline-block", width: 14, height: 14, border: "2px solid rgba(255,255,255,.3)", borderTopColor: "#fff", borderRadius: "50%" }} />
+                      {classifying ? "LLM 분류 중…" : "저장 중…"}
+                    </span>
+                  ) : "저장 + 자동 분류"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
