@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import * as XLSX from "xlsx";
 
 // ── Framework 정의 ────────────────────────────────────────────────
 const FRAMEWORK = {
@@ -37,6 +38,7 @@ const STATUS_STYLES = {
 };
 
 const PRIORITY_COLORS = { High: "#ff4d6d", Medium: "#ffd60a", Low: "#4cc9f0" };
+const TASK_TYPES = ["과제", "미팅", "POC", "파일럿"];
 
 // ── LLM 분류 호출 ────────────────────────────────────────────────
 async function classifyWithLLM(taskData) {
@@ -59,7 +61,7 @@ ${frameworkText}
 제목: ${taskData.title}
 배경/목적: ${taskData.background}
 요청 내용: ${taskData.request}
-기대 결과: ${taskData.expected}
+기대 결과: ${taskData.to_be}
 
 === 출력 형식 (JSON만, 설명 없이) ===
 {
@@ -101,8 +103,9 @@ ${frameworkText}
 // ── 빈 폼 ───────────────────────────────────────────────────────
 const emptyForm = () => ({
   title: "", requester: "", owner: "",
-  due_date: "", status: "대기중", priority: "Medium",
+  start_date: "", due_date: "", status: "대기중", priority: "Medium",
   effort_estimate: "M", tags: "",
+  task_type: "과제", project: "",
   background: "", request: "", as_is: "", to_be: "", constraints: "",
 });
 
@@ -115,8 +118,11 @@ title: "${task.title}"
 requester: "${task.requester || ""}"
 owner: "${task.owner || ""}"
 created_date: "${task.created_date}"
+start_date: "${task.start_date || ""}"
 due_date: "${task.due_date || ""}"
 status: "${task.status}"
+task_type: "${task.task_type || "과제"}"
+project: "${task.project || ""}"
 primary_category: "${task.primary_category || ""}"
 primary_code: "${task.primary_code || ""}"
 secondary_category: "${task.secondary_category || ""}"
@@ -164,11 +170,48 @@ function downloadMD(task) {
   URL.revokeObjectURL(url);
 }
 
+// ── Excel 템플릿 다운로드 ────────────────────────────────────────
+function downloadExcelTemplate() {
+  const headers = [
+    "title","requester","owner","start_date","due_date",
+    "status","priority","effort_estimate","tags",
+    "task_type","project",
+    "background","request","as_is","to_be","constraints"
+  ];
+  const examples = [
+    [
+      "RAG 기반 고객문의 자동화","고객서비스팀","홍길동",
+      "2026-03-01","2026-06-30","진행중","High","L","RAG,파일럿",
+      "파일럿","AI 고객서비스 혁신",
+      "고객 문의 응대 자동화 필요","RAG 시스템 구축 및 파일럿 운영",
+      "이메일/전화로 수동 처리 중","자동응답률 70% 달성","기존 CRM 연동 필요"
+    ],
+    [
+      "데이터 품질 관리 체계 구축","데이터팀","김철수",
+      "2026-01-15","2026-03-31","대기중","Medium","M","데이터품질,표준화",
+      "과제","AI 데이터 인프라 강화",
+      "원천 데이터 품질 이슈 빈발","데이터 품질 지표 정의 및 모니터링",
+      "부서별 데이터 관리 기준 상이","데이터 품질 스코어 90% 이상","레거시 시스템 연동 복잡"
+    ],
+    [
+      "AI 거버넌스 킥오프 미팅","전략기획팀","이영희",
+      "2026-02-10","2026-02-10","완료","Low","S","거버넌스,미팅",
+      "미팅","AI 거버넌스 수립",
+      "AI 도입 가이드라인 공유 목적","주요 이해관계자 킥오프","없음","회의록 및 액션아이템 도출","전 부서 임원 참석 필요"
+    ],
+  ];
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...examples]);
+  ws["!cols"] = headers.map(() => ({ wch: 22 }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Tasks");
+  XLSX.writeFile(wb, "task_import_template.xlsx");
+}
+
 // ════════════════════════════════════════════════════════════════
 // 메인 앱
 // ════════════════════════════════════════════════════════════════
 export default function App() {
-  const [view, setView] = useState("dashboard"); // dashboard | form | detail
+  const [view, setView] = useState("dashboard");
   const [tasks, setTasks] = useState(() => {
     try { return JSON.parse(localStorage.getItem("ai_tasks") || "[]"); }
     catch { return []; }
@@ -181,6 +224,9 @@ export default function App() {
   const [filterStatus, setFilterStatus] = useState("전체");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [ganttYear, setGanttYear] = useState(new Date().getFullYear());
+  const [importProgress, setImportProgress] = useState(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     localStorage.setItem("ai_tasks", JSON.stringify(tasks));
@@ -215,6 +261,70 @@ export default function App() {
     }
   };
 
+  const handleExcelImport = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = "";
+    setError("");
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(new Uint8Array(buffer), { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+      const validRows = rows.filter((r) => String(r.title || "").trim());
+      if (validRows.length === 0) { setError("유효한 데이터 행이 없습니다. 템플릿을 확인하세요."); return; }
+
+      setImportProgress({ current: 0, total: validRows.length });
+      const newTasks = [];
+
+      for (let i = 0; i < validRows.length; i++) {
+        const row = validRows[i];
+        setImportProgress({ current: i + 1, total: validRows.length });
+        const taskData = {
+          title:          String(row.title || ""),
+          requester:      String(row.requester || ""),
+          owner:          String(row.owner || ""),
+          start_date:     String(row.start_date || ""),
+          due_date:       String(row.due_date || ""),
+          status:         row.status || "대기중",
+          priority:       row.priority || "Medium",
+          effort_estimate: row.effort_estimate || "M",
+          tags:           String(row.tags || ""),
+          task_type:      row.task_type || "과제",
+          project:        String(row.project || ""),
+          background:     String(row.background || ""),
+          request:        String(row.request || ""),
+          as_is:          String(row.as_is || ""),
+          to_be:          String(row.to_be || ""),
+          constraints:    String(row.constraints || ""),
+        };
+        let cls = {};
+        try { cls = await classifyWithLLM(taskData); } catch { /* 미분류로 추가 */ }
+        newTasks.push({
+          ...taskData,
+          tags: taskData.tags.split(",").map((t) => t.trim()).filter(Boolean),
+          created_date: new Date().toISOString().split("T")[0],
+          history: [{ date: new Date().toISOString().split("T")[0], content: "엑셀 일괄 등록", author: taskData.owner || "-" }],
+          ...cls,
+        });
+      }
+
+      setTasks((prev) => {
+        const base = prev.length;
+        const numbered = newTasks.map((t, i) => ({
+          ...t,
+          id: `TASK-${String(base + i + 1).padStart(3, "0")}`,
+        }));
+        return [...numbered.reverse(), ...prev];
+      });
+      setImportProgress(null);
+      setView("dashboard");
+    } catch (e) {
+      setError(`엑셀 파싱 오류: ${e.message}`);
+      setImportProgress(null);
+    }
+  };
+
   const filteredTasks = tasks.filter((t) => {
     const catOk = filterCat === "전체" || t.primary_category === filterCat;
     const stOk = filterStatus === "전체" || t.status === filterStatus;
@@ -233,13 +343,61 @@ export default function App() {
 
   const navTo = (v) => { setView(v); setSelectedTask(null); setClassResult(null); setError(""); };
 
+  // ── Gantt 계산 ────────────────────────────────────────────────
+  const MONTHS = ["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"];
+  const QUARTERS = [
+    { label: "Q1 (1~3월)", months: [0,1,2] },
+    { label: "Q2 (4~6월)", months: [3,4,5] },
+    { label: "Q3 (7~9월)", months: [6,7,8] },
+    { label: "Q4 (10~12월)", months: [9,10,11] },
+  ];
+  const daysPerMonth = Array.from({ length: 12 }, (_, m) => new Date(ganttYear, m + 1, 0).getDate());
+  const totalDays = daysPerMonth.reduce((a, b) => a + b, 0);
+  const monthOffsetDays = daysPerMonth.reduce((acc, d, i) => {
+    acc.push(i === 0 ? 0 : acc[i - 1] + daysPerMonth[i - 1]);
+    return acc;
+  }, []);
+
+  const yearStartMs = new Date(ganttYear, 0, 1).getTime();
+  const yearEndMs   = new Date(ganttYear + 1, 0, 1).getTime();
+  const yearDurMs   = yearEndMs - yearStartMs;
+
+  const getBarPos = (task) => {
+    const startStr = task.start_date || task.created_date;
+    if (!startStr) return null;
+    const s = new Date(startStr).getTime();
+    const e = task.due_date ? new Date(task.due_date).getTime() + 86400000 : s + 86400000;
+    if (s >= yearEndMs || e <= yearStartMs) return null;
+    const cs = Math.max(s, yearStartMs);
+    const ce = Math.min(e, yearEndMs);
+    const left  = (cs - yearStartMs) / yearDurMs * 100;
+    const width = Math.max(0.5, (ce - cs) / yearDurMs * 100);
+    return { left, width };
+  };
+
+  const todayPct = (() => {
+    const today = new Date();
+    if (today.getFullYear() !== ganttYear) return null;
+    return (today.getTime() - yearStartMs) / yearDurMs * 100;
+  })();
+
+  const ganttByCategory = Object.keys(FRAMEWORK).map((cat) => ({
+    cat,
+    color: FRAMEWORK[cat].color,
+    bg:    FRAMEWORK[cat].bg,
+    items: tasks.filter((t) => t.primary_category === cat && getBarPos(t) !== null),
+  })).filter((g) => g.items.length > 0);
+
+  const ganttTotal = ganttByCategory.reduce((s, g) => s + g.items.length, 0);
+  const LABEL_W = 280;
+
   // ── 렌더 ──────────────────────────────────────────────────────
   return (
     <div style={{ minHeight: "100vh", background: "#090e1a", color: "#e2e8f0", fontFamily: "'DM Sans', 'Noto Sans KR', sans-serif" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700&family=DM+Mono:wght@400;500&family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: #0f1629; }
         ::-webkit-scrollbar-thumb { background: #2a3a5c; border-radius: 3px; }
         input, textarea, select { outline: none; font-family: inherit; }
@@ -256,6 +414,7 @@ export default function App() {
         .btn-ghost:hover { border-color: #4ECDC4; color: #4ECDC4; }
         .btn-sm { background: transparent; border: 1px solid #1e2d4a; border-radius: 6px; color: #64748b; padding: 6px 12px; font-size: 12px; cursor: pointer; transition: all .2s; }
         .btn-sm:hover { border-color: #4ECDC4; color: #4ECDC4; }
+        .btn-sm:disabled { opacity: .4; cursor: not-allowed; }
         .card { background: #0f1629; border: 1px solid #1e2d4a; border-radius: 12px; padding: 20px; }
         .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 500; }
         .task-row { display: grid; grid-template-columns: 90px 1fr 160px 100px 80px 70px 36px; gap: 12px; align-items: center; padding: 14px 16px; border-bottom: 1px solid #0f1629; transition: background .15s; cursor: pointer; }
@@ -265,6 +424,9 @@ export default function App() {
         .fade-in { animation: fadeIn .4s ease; }
         @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         .cls-badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+        .gantt-row:hover { background: #111827 !important; }
+        .gantt-bar { position: absolute; top: 50%; transform: translateY(-50%); border-radius: 4px; cursor: pointer; }
+        .gantt-bar:hover { opacity: 1 !important; filter: brightness(1.15); }
       `}</style>
 
       {/* ── 헤더 ── */}
@@ -274,7 +436,7 @@ export default function App() {
           <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: ".02em" }}>AI Task Dashboard</span>
         </div>
         <nav style={{ display: "flex", gap: 6 }}>
-          {[["dashboard","📊 대시보드"], ["form","＋ Task 등록"]].map(([v, label]) => (
+          {[["dashboard","📊 대시보드"], ["gantt","📅 로드맵"], ["form","＋ Task 등록"]].map(([v, label]) => (
             <button key={v} onClick={() => navTo(v)}
               style={{ background: view === v ? "#1e2d4a" : "transparent", border: "none", color: view === v ? "#4ECDC4" : "#64748b", padding: "6px 16px", borderRadius: 6, fontSize: 13, fontWeight: 500, cursor: "pointer", transition: "all .2s" }}>
               {label}
@@ -283,12 +445,11 @@ export default function App() {
         </nav>
       </header>
 
-      <main style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 24px" }}>
+      <main style={{ maxWidth: 1400, margin: "0 auto", padding: "32px 24px" }}>
 
         {/* ══ 대시보드 ══ */}
         {view === "dashboard" && !selectedTask && (
           <div className="fade-in">
-            {/* KPI 카드 */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 12, marginBottom: 24 }}>
               {Object.entries(FRAMEWORK).map(([cat, { color, bg }]) => (
                 <div key={cat} onClick={() => setFilterCat(filterCat === cat ? "전체" : cat)}
@@ -299,7 +460,6 @@ export default function App() {
               ))}
             </div>
 
-            {/* 상태 필터 */}
             <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
               {["전체", ...Object.keys(STATUS_STYLES)].map((s) => (
                 <button key={s} onClick={() => setFilterStatus(s)}
@@ -310,7 +470,6 @@ export default function App() {
               ))}
             </div>
 
-            {/* Task 테이블 */}
             <div className="card" style={{ padding: 0, overflow: "hidden" }}>
               <div style={{ display: "grid", gridTemplateColumns: "90px 1fr 160px 100px 80px 70px 36px", gap: 12, padding: "10px 16px", borderBottom: "1px solid #1e2d4a" }}>
                 {["ID","제목","분류","담당자","상태","우선순위",""].map((h, i) => (
@@ -360,11 +519,14 @@ export default function App() {
             <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 20 }}>
               <div>
                 <div className="card" style={{ marginBottom: 16 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
                     <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 13, color: "#4ECDC4" }}>{selectedTask.id}</span>
                     <span className="pill" style={{ background: `${STATUS_STYLES[selectedTask.status]?.dot}18`, color: STATUS_STYLES[selectedTask.status]?.color, border: `1px solid ${STATUS_STYLES[selectedTask.status]?.dot}30` }}>
                       {selectedTask.status}
                     </span>
+                    {selectedTask.task_type && selectedTask.task_type !== "과제" && (
+                      <span className="pill" style={{ background: "#1e2d4a", color: "#94a3b8", border: "1px solid #2a3a5c" }}>{selectedTask.task_type}</span>
+                    )}
                   </div>
                   <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 20, lineHeight: 1.4 }}>{selectedTask.title}</h2>
                   {[["배경 및 목적", selectedTask.background], ["요청 내용", selectedTask.request], ["현재 상황 (As-Is)", selectedTask.as_is], ["기대 결과 (To-Be)", selectedTask.to_be], ["제약 조건", selectedTask.constraints]].map(([label, val]) => val && (
@@ -400,7 +562,17 @@ export default function App() {
                 </div>
                 <div className="card">
                   <div className="label" style={{ marginBottom: 10 }}>기본 정보</div>
-                  {[["요청자", selectedTask.requester], ["담당자", selectedTask.owner], ["등록일", selectedTask.created_date], ["마감일", selectedTask.due_date], ["우선순위", selectedTask.priority], ["규모", selectedTask.effort_estimate]].map(([k, v]) => v && (
+                  {[
+                    ["요청자", selectedTask.requester],
+                    ["담당자", selectedTask.owner],
+                    ["프로젝트", selectedTask.project],
+                    ["유형", selectedTask.task_type],
+                    ["등록일", selectedTask.created_date],
+                    ["시작일", selectedTask.start_date],
+                    ["마감일", selectedTask.due_date],
+                    ["우선순위", selectedTask.priority],
+                    ["규모", selectedTask.effort_estimate],
+                  ].map(([k, v]) => v && (
                     <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #1e2d4a", fontSize: 13 }}>
                       <span style={{ color: "#475569" }}>{k}</span>
                       <span style={{ color: "#94a3b8", fontWeight: 500 }}>{v}</span>
@@ -419,11 +591,200 @@ export default function App() {
           </div>
         )}
 
+        {/* ══ 간트 로드맵 ══ */}
+        {view === "gantt" && (
+          <div className="fade-in">
+            {/* 헤더 */}
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
+              <div>
+                <h2 style={{ fontSize: 18, fontWeight: 700 }}>{ganttYear}년 AI Readiness 로드맵</h2>
+                <p style={{ fontSize: 12, color: "#475569", marginTop: 4 }}>
+                  Framework 카테고리별 과제 타임라인
+                  {ganttTotal > 0 && ` · ${ganttTotal}건`}
+                </p>
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button className="btn-sm" onClick={() => setGanttYear((y) => y - 1)}>◀ {ganttYear - 1}</button>
+                <span style={{ fontSize: 14, fontWeight: 700, color: "#4ECDC4", minWidth: 40, textAlign: "center" }}>{ganttYear}</span>
+                <button className="btn-sm" onClick={() => setGanttYear((y) => y + 1)}>{ganttYear + 1} ▶</button>
+              </div>
+            </div>
+
+            {/* 범례 */}
+            <div style={{ display: "flex", gap: 16, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
+              {Object.entries(FRAMEWORK).map(([cat, { color }]) => (
+                <span key={cat} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#64748b" }}>
+                  <span style={{ width: 10, height: 10, borderRadius: 2, background: color, display: "inline-block", flexShrink: 0 }} />{cat}
+                </span>
+              ))}
+              <span style={{ width: 1, height: 14, background: "#2a3a5c", display: "inline-block", flexShrink: 0 }} />
+              <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#475569" }}>
+                <span style={{ width: 20, height: 7, background: "#64748b", borderRadius: 2, display: "inline-block" }} />과제
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#475569" }}>
+                <span style={{ width: 20, height: 7, backgroundImage: "repeating-linear-gradient(90deg,#64748b 0,#64748b 5px,transparent 5px,transparent 10px)", display: "inline-block" }} />POC / 파일럿
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#475569" }}>
+                <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#64748b", display: "inline-block" }} />미팅
+              </span>
+              {todayPct !== null && (
+                <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "#ff6b9d" }}>
+                  <span style={{ width: 2, height: 12, background: "#ff6b9d", borderRadius: 1, display: "inline-block" }} />오늘
+                </span>
+              )}
+            </div>
+
+            {ganttTotal === 0 ? (
+              <div className="card" style={{ textAlign: "center", padding: "56px 16px", color: "#334155" }}>
+                <div style={{ fontSize: 32, marginBottom: 16 }}>📅</div>
+                <div style={{ fontSize: 14, marginBottom: 8 }}>{ganttYear}년에 표시할 Task가 없습니다.</div>
+                <div style={{ fontSize: 12, color: "#1e2d4a" }}>
+                  Task 등록 시 <strong style={{ color: "#4ECDC4" }}>시작일 / 마감일</strong>을 입력하면 로드맵에 자동으로 표시됩니다.
+                </div>
+                <div style={{ marginTop: 20 }}>
+                  <span style={{ color: "#4ECDC4", cursor: "pointer", fontSize: 13 }} onClick={() => navTo("form")}>Task 등록하러 가기 →</span>
+                </div>
+              </div>
+            ) : (
+              <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+                {/* 타임라인 헤더 */}
+                <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 10, background: "#0f1629", borderBottom: "2px solid #1e2d4a", minWidth: LABEL_W + 720 }}>
+                  <div style={{ width: LABEL_W, minWidth: LABEL_W, padding: "8px 16px", fontSize: 10, color: "#334155", fontWeight: 600, letterSpacing: ".08em", textTransform: "uppercase", borderRight: "1px solid #1e2d4a", flexShrink: 0 }}>
+                    과제명
+                  </div>
+                  <div style={{ flex: 1, minWidth: 720, position: "relative" }}>
+                    {/* 분기 헤더 */}
+                    <div style={{ display: "flex", borderBottom: "1px solid #1e2d4a" }}>
+                      {QUARTERS.map((q) => {
+                        const qDays = q.months.reduce((s, m) => s + daysPerMonth[m], 0);
+                        return (
+                          <div key={q.label} style={{ width: `${qDays / totalDays * 100}%`, textAlign: "center", fontSize: 11, fontWeight: 700, color: "#64748b", padding: "5px 0", borderRight: "1px solid #1e2d4a" }}>
+                            {q.label}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {/* 월 헤더 */}
+                    <div style={{ display: "flex" }}>
+                      {MONTHS.map((m, i) => (
+                        <div key={i} style={{ width: `${daysPerMonth[i] / totalDays * 100}%`, textAlign: "center", fontSize: 10, color: "#475569", padding: "3px 0", borderRight: "1px solid #0f1629", whiteSpace: "nowrap", overflow: "hidden" }}>
+                          {m}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 카테고리별 행 */}
+                {ganttByCategory.map(({ cat, color, bg, items }) => (
+                  <div key={cat} style={{ minWidth: LABEL_W + 720 }}>
+                    {/* 카테고리 헤더 행 */}
+                    <div style={{ display: "flex", background: bg, borderBottom: "1px solid #1e2d4a" }}>
+                      <div style={{ width: LABEL_W, minWidth: LABEL_W, padding: "6px 16px", fontSize: 11, fontWeight: 700, color, borderRight: "1px solid #1e2d4a", flexShrink: 0, letterSpacing: ".04em" }}>
+                        ▸ {cat} <span style={{ fontWeight: 400, opacity: .55 }}>({items.length})</span>
+                      </div>
+                      <div style={{ flex: 1, minWidth: 720, position: "relative" }}>
+                        {monthOffsetDays.map((d, i) => i > 0 && (
+                          <div key={i} style={{ position: "absolute", left: `${d / totalDays * 100}%`, top: 0, bottom: 0, width: 1, background: "#ffffff08" }} />
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Task 행 */}
+                    {items.map((task) => {
+                      const pos = getBarPos(task);
+                      const isMeeting = task.task_type === "미팅";
+                      const isDashed  = task.task_type === "POC" || task.task_type === "파일럿";
+                      return (
+                        <div key={task.id} className="gantt-row"
+                          style={{ display: "flex", borderBottom: "1px solid #0a1020", minHeight: 40, cursor: "pointer", transition: "background .12s" }}
+                          onClick={() => { setSelectedTask(task); setView("detail"); }}>
+                          {/* 라벨 */}
+                          <div style={{ width: LABEL_W, minWidth: LABEL_W, padding: "0 16px", display: "flex", alignItems: "center", gap: 7, borderRight: "1px solid #1e2d4a", flexShrink: 0, overflow: "hidden" }}>
+                            <span style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: "#4ECDC4", flexShrink: 0 }}>{task.id}</span>
+                            <span style={{ fontSize: 12, color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{task.title}</span>
+                            {task.task_type && task.task_type !== "과제" && (
+                              <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, border: `1px solid ${color}40`, color, flexShrink: 0 }}>{task.task_type}</span>
+                            )}
+                          </div>
+                          {/* 타임라인 */}
+                          <div style={{ flex: 1, minWidth: 720, position: "relative" }}>
+                            {/* 월 구분선 */}
+                            {monthOffsetDays.map((d, i) => i > 0 && (
+                              <div key={i} style={{ position: "absolute", left: `${d / totalDays * 100}%`, top: 0, bottom: 0, width: 1, background: "#1e2d4a" }} />
+                            ))}
+                            {/* 오늘 선 */}
+                            {todayPct !== null && (
+                              <div style={{ position: "absolute", left: `${todayPct}%`, top: 0, bottom: 0, width: 1, background: "#ff6b9d50", zIndex: 1, pointerEvents: "none" }} />
+                            )}
+                            {/* 바 */}
+                            {pos && (
+                              <div
+                                className="gantt-bar"
+                                title={[
+                                  `${task.id}: ${task.title}`,
+                                  `${task.start_date || task.created_date} ~ ${task.due_date || ""}`,
+                                  task.project ? `프로젝트: ${task.project}` : "",
+                                  task.classification_note || "",
+                                ].filter(Boolean).join("\n")}
+                                style={{
+                                  left: `${pos.left}%`,
+                                  width: `${pos.width}%`,
+                                  height: isMeeting ? 10 : 20,
+                                  borderRadius: isMeeting ? "50% / 50%" : 4,
+                                  background: isDashed
+                                    ? `repeating-linear-gradient(90deg, ${color} 0px, ${color} 5px, ${color}28 5px, ${color}28 10px)`
+                                    : color,
+                                  opacity: 0.8,
+                                  zIndex: 2,
+                                }}
+                              />
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ══ 등록 폼 ══ */}
         {view === "form" && (
           <div className="fade-in" style={{ maxWidth: 720, margin: "0 auto" }}>
-            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Task 등록</h2>
-            <p style={{ fontSize: 13, color: "#475569", marginBottom: 28 }}>저장 시 LLM이 AI Readiness Framework 기준으로 자동 분류합니다.</p>
+
+            {/* 엑셀 임포트 진행 바 */}
+            {importProgress && (
+              <div className="card" style={{ marginBottom: 20, borderColor: "#4ECDC4", background: "#0d2e2c" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  <span className="spin" style={{ display: "inline-block", width: 14, height: 14, border: "2px solid rgba(78,205,196,.3)", borderTopColor: "#4ECDC4", borderRadius: "50%", flexShrink: 0 }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#4ECDC4" }}>
+                    LLM 분류 중… {importProgress.current} / {importProgress.total}건
+                  </span>
+                </div>
+                <div style={{ height: 4, background: "#1e2d4a", borderRadius: 2, overflow: "hidden" }}>
+                  <div style={{ height: "100%", background: "linear-gradient(90deg,#4ECDC4,#2a9d8f)", borderRadius: 2, width: `${importProgress.current / importProgress.total * 100}%`, transition: "width .3s" }} />
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 28, gap: 16 }}>
+              <div>
+                <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Task 등록</h2>
+                <p style={{ fontSize: 13, color: "#475569" }}>저장 시 LLM이 AI Readiness Framework 기준으로 자동 분류합니다.</p>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexShrink: 0, alignItems: "flex-start" }}>
+                <button className="btn-sm" onClick={downloadExcelTemplate} title="예시 데이터 포함 엑셀 템플릿 다운로드">
+                  ↓ 템플릿
+                </button>
+                <button className="btn-sm" onClick={() => fileInputRef.current?.click()} disabled={!!importProgress} title="엑셀 파일로 Task 일괄 등록">
+                  ↑ 엑셀 업로드
+                </button>
+                <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleExcelImport} />
+              </div>
+            </div>
 
             {classResult && (
               <div className="fade-in card" style={{ marginBottom: 20, borderColor: "#4ECDC4", background: "#0d2e2c" }}>
@@ -460,15 +821,29 @@ export default function App() {
                         <input className="inp" placeholder={ph} value={form[key]} onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))} />
                       </div>
                     ))}
+                    <div className="field" style={{ gridColumn: "1 / -1" }}>
+                      <label className="label">프로젝트 / 이니셔티브</label>
+                      <input className="inp" placeholder="예: AI 고객서비스 혁신 — 여러 Task를 묶는 상위 과제명" value={form.project} onChange={(e) => setForm((p) => ({ ...p, project: e.target.value }))} />
+                    </div>
                     <div className="field">
-                      <label className="label">마감일</label>
-                      <input className="inp" type="date" value={form.due_date} onChange={(e) => setForm((p) => ({ ...p, due_date: e.target.value }))} style={{ colorScheme: "dark" }} />
+                      <label className="label">Task 유형</label>
+                      <select className="inp" value={form.task_type} onChange={(e) => setForm((p) => ({ ...p, task_type: e.target.value }))}>
+                        {TASK_TYPES.map((t) => <option key={t}>{t}</option>)}
+                      </select>
                     </div>
                     <div className="field">
                       <label className="label">상태</label>
                       <select className="inp" value={form.status} onChange={(e) => setForm((p) => ({ ...p, status: e.target.value }))}>
                         {Object.keys(STATUS_STYLES).map((s) => <option key={s}>{s}</option>)}
                       </select>
+                    </div>
+                    <div className="field">
+                      <label className="label">시작일 <span style={{ color: "#334155", fontSize: 10 }}>(로드맵 표시 기준)</span></label>
+                      <input className="inp" type="date" value={form.start_date} onChange={(e) => setForm((p) => ({ ...p, start_date: e.target.value }))} style={{ colorScheme: "dark" }} />
+                    </div>
+                    <div className="field">
+                      <label className="label">마감일</label>
+                      <input className="inp" type="date" value={form.due_date} onChange={(e) => setForm((p) => ({ ...p, due_date: e.target.value }))} style={{ colorScheme: "dark" }} />
                     </div>
                     <div className="field">
                       <label className="label">우선순위</label>
@@ -518,7 +893,7 @@ export default function App() {
 
               <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
                 <button className="btn-ghost" onClick={() => setForm(emptyForm())}>초기화</button>
-                <button className="btn-primary" onClick={handleSave} disabled={saving}>
+                <button className="btn-primary" onClick={handleSave} disabled={saving || !!importProgress}>
                   {saving ? (
                     <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
                       <span className="spin" style={{ display: "inline-block", width: 14, height: 14, border: "2px solid rgba(255,255,255,.3)", borderTopColor: "#fff", borderRadius: "50%" }} />
