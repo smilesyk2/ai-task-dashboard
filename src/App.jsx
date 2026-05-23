@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 // ── Framework 정의 ────────────────────────────────────────────────
 const FRAMEWORK = {
@@ -29,14 +29,24 @@ const CATEGORY_CODES = {
 };
 
 const STATUS_STYLES = {
-  "대기중":  { color: "#94a3b8", dot: "#64748b" },
-  "진행중":  { color: "#60a5fa", dot: "#3b82f6" },
-  "검토중":  { color: "#fb923c", dot: "#f97316" },
-  "완료":    { color: "#4ade80", dot: "#22c55e" },
-  "보류":    { color: "#f87171", dot: "#ef4444" },
+  "대기중": { color: "#94a3b8", dot: "#64748b" },
+  "진행중": { color: "#60a5fa", dot: "#3b82f6" },
+  "검토중": { color: "#fb923c", dot: "#f97316" },
+  "완료":   { color: "#4ade80", dot: "#22c55e" },
+  "보류":   { color: "#f87171", dot: "#ef4444" },
 };
 
 const PRIORITY_COLORS = { High: "#ff4d6d", Medium: "#ffd60a", Low: "#4cc9f0" };
+
+// 선택 열 기본 설정 (담당자·상태·우선순위는 기본 숨김)
+const DEFAULT_COL_CONFIG = [
+  { id: "owner",           label: "담당자",   width: "88px",  visible: false },
+  { id: "status",          label: "상태",     width: "85px",  visible: false },
+  { id: "priority",        label: "우선순위", width: "68px",  visible: false },
+  { id: "requester",       label: "요청자",   width: "88px",  visible: false },
+  { id: "effort_estimate", label: "규모",     width: "52px",  visible: false },
+  { id: "due_date",        label: "마감일",   width: "90px",  visible: false },
+];
 
 // ── LLM 분류 호출 ────────────────────────────────────────────────
 async function classifyWithLLM(taskData) {
@@ -46,8 +56,7 @@ async function classifyWithLLM(taskData) {
   const frameworkText = Object.entries(FRAMEWORK)
     .map(([cat, { items }]) =>
       `[${cat}]\n${items.map((it, i) => `  ${CATEGORY_CODES[cat]}-0${i + 1}: ${it}`).join("\n")}`
-    )
-    .join("\n\n");
+    ).join("\n\n");
 
   const prompt = `당신은 AI Readiness Framework 전문가입니다.
 아래 Framework 기준으로 Task를 분류하고, 반드시 JSON만 반환하세요.
@@ -116,7 +125,6 @@ function getPrimaryCode(cat, sub) {
   return idx >= 0 ? `${CATEGORY_CODES[cat]}-${String(idx + 1).padStart(2, "0")}` : "";
 }
 
-// Gantt: 2026년 기준 left/width (%) 계산
 function calcGanttBar(createdDate, dueDate) {
   const yearStart = new Date("2026-01-01").getTime();
   const yearEnd   = new Date("2026-12-31").getTime();
@@ -129,14 +137,13 @@ function calcGanttBar(createdDate, dueDate) {
   return { left: Math.min(left, 98), width: Math.min(width, 100 - left) };
 }
 
+// Gantt bar — 헤더의 Q1~Q4 열과 span-4로 정렬, 내부 레이블 없음
 function GanttBar({ createdDate, dueDate, color }) {
   const bar = calcGanttBar(createdDate, dueDate);
   return (
-    <div style={{ position: "relative", height: 30, display: "flex", borderRadius: 4, overflow: "hidden" }}>
-      {["1Q","2Q","3Q","4Q"].map((q, i) => (
-        <div key={q} style={{ flex: 1, borderLeft: i > 0 ? "1px solid #1e2d4a" : "none", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <span style={{ fontSize: 9, color: "#2a3a5c", fontWeight: 700, letterSpacing: ".04em" }}>{q}</span>
-        </div>
+    <div style={{ position: "relative", height: 30, display: "flex" }}>
+      {[0, 1, 2, 3].map((i) => (
+        <div key={i} style={{ flex: 1, borderLeft: i > 0 ? "1px solid #1a2540" : "none" }} />
       ))}
       {bar && (
         <div style={{
@@ -239,15 +246,58 @@ const SEED_TASKS = [
   },
 ];
 
-// 테이블 컬럼 정의
-const GRID = "155px 1fr 240px 88px 82px 65px 130px 34px";
-const HEADERS = ["분류 (대/중)","Task","'26 일정 (Gantt)","담당자","상태","우선순위","비고",""];
+// ════════════════════════════════════════════════════════════════
+// 열 설정 패널
+// ════════════════════════════════════════════════════════════════
+function ColSettingsPanel({ colConfig, onToggle, onMove, onClose }) {
+  const ref = useRef(null);
+
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) onClose(); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose]);
+
+  return (
+    <div ref={ref} style={{
+      position: "absolute", zIndex: 300, top: "calc(100% + 6px)", right: 0,
+      background: "#0f1629", border: "1px solid #1e2d4a", borderRadius: 10,
+      padding: "14px 16px", minWidth: 230, boxShadow: "0 8px 32px rgba(0,0,0,.5)",
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 12 }}>
+        열 표시 / 순서 설정
+      </div>
+      <div style={{ fontSize: 11, color: "#334155", marginBottom: 10 }}>
+        Task명·분류·간트·비고는 고정
+      </div>
+      {colConfig.map((col, idx) => (
+        <div key={col.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, padding: "4px 6px", borderRadius: 6, background: col.visible ? "#1a2540" : "transparent" }}>
+          <button
+            onClick={() => onToggle(col.id)}
+            style={{
+              width: 16, height: 16, borderRadius: 3, border: `1px solid ${col.visible ? "#4ECDC4" : "#334155"}`,
+              background: col.visible ? "#4ECDC4" : "transparent", cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+            }}
+          >
+            {col.visible && <span style={{ color: "#090e1a", fontSize: 10, fontWeight: 700, lineHeight: 1 }}>✓</span>}
+          </button>
+          <span style={{ flex: 1, fontSize: 13, color: col.visible ? "#e2e8f0" : "#475569" }}>{col.label}</span>
+          <button onClick={() => onMove(idx, -1)} disabled={idx === 0}
+            style={{ background: "none", border: "none", color: idx === 0 ? "#1e2d4a" : "#64748b", cursor: idx === 0 ? "default" : "pointer", fontSize: 13, padding: "1px 4px", lineHeight: 1 }}>↑</button>
+          <button onClick={() => onMove(idx, 1)} disabled={idx === colConfig.length - 1}
+            style={{ background: "none", border: "none", color: idx === colConfig.length - 1 ? "#1e2d4a" : "#64748b", cursor: idx === colConfig.length - 1 ? "default" : "pointer", fontSize: 13, padding: "1px 4px", lineHeight: 1 }}>↓</button>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 // ════════════════════════════════════════════════════════════════
 // 메인 앱
 // ════════════════════════════════════════════════════════════════
 export default function App() {
-  const [view, setView] = useState("dashboard"); // dashboard | form | edit
+  const [view, setView] = useState("dashboard");
   const [tasks, setTasks] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem("ai_tasks") || "[]");
@@ -264,11 +314,59 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    localStorage.setItem("ai_tasks", JSON.stringify(tasks));
-  }, [tasks]);
+  // 열 설정
+  const [colConfig, setColConfig] = useState(DEFAULT_COL_CONFIG);
+  const [showColPanel, setShowColPanel] = useState(false);
 
-  // 폼 공통 로직 ──────────────────────────────────────────────────
+  useEffect(() => { localStorage.setItem("ai_tasks", JSON.stringify(tasks)); }, [tasks]);
+
+  // ── 열 조작 ──────────────────────────────────────────────────
+  const toggleCol = (id) => setColConfig((prev) => prev.map((c) => c.id === id ? { ...c, visible: !c.visible } : c));
+  const moveCol = (idx, dir) => setColConfig((prev) => {
+    const next = [...prev];
+    const swap = idx + dir;
+    if (swap < 0 || swap >= next.length) return prev;
+    [next[idx], next[swap]] = [next[swap], next[idx]];
+    return next;
+  });
+
+  // 동적 그리드 템플릿 ─ 고정좌 | 선택열... | Q1 Q2 Q3 Q4 | 비고 | ↓
+  const visibleOptCols = colConfig.filter((c) => c.visible);
+  const gridTemplate = [
+    "150px",                              // 분류
+    "1fr",                                // Task
+    ...visibleOptCols.map((c) => c.width),
+    "62px", "62px", "62px", "62px",       // 4 quarters
+    "130px",                              // 비고
+    "34px",                               // ↓
+  ].join(" ");
+
+  // ── 분류 셀 렌더 ─────────────────────────────────────────────
+  const renderColCell = (colId, t) => {
+    switch (colId) {
+      case "owner":
+        return <span style={{ fontSize: 12, color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.owner || "—"}</span>;
+      case "status": {
+        const st = STATUS_STYLES[t.status] || STATUS_STYLES["대기중"];
+        return (
+          <span className="pill" style={{ background: `${st.dot}18`, color: st.color, border: `1px solid ${st.dot}30`, justifySelf: "start", whiteSpace: "nowrap" }}>
+            <span style={{ width: 5, height: 5, borderRadius: "50%", background: st.dot, display: "inline-block" }} />{t.status}
+          </span>
+        );
+      }
+      case "priority":
+        return <span style={{ fontSize: 12, fontWeight: 600, color: PRIORITY_COLORS[t.priority] || "#94a3b8" }}>{t.priority}</span>;
+      case "requester":
+        return <span style={{ fontSize: 12, color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.requester || "—"}</span>;
+      case "effort_estimate":
+        return <span style={{ fontSize: 12, color: "#94a3b8" }}>{t.effort_estimate}</span>;
+      case "due_date":
+        return <span style={{ fontSize: 12, color: "#94a3b8" }}>{t.due_date || "—"}</span>;
+      default: return null;
+    }
+  };
+
+  // ── 폼 공통 로직 ─────────────────────────────────────────────
   const buildClassification = (f) => ({
     primary_category: f.primary_category,
     primary_code: getPrimaryCode(f.primary_category, f.primary_sub),
@@ -298,8 +396,7 @@ export default function App() {
           ...cls,
         };
         setTasks((prev) => [newTask, ...prev]);
-        setForm(emptyForm());
-        setClassifying(false); setSaving(false);
+        setForm(emptyForm()); setClassifying(false); setSaving(false);
         setTimeout(() => { setClassResult(null); setView("dashboard"); }, 2500);
       } catch (e) {
         setError(e.message || "LLM 분류 중 오류가 발생했습니다.");
@@ -325,12 +422,7 @@ export default function App() {
     setError(""); setSaving(true); setClassResult(null);
 
     const applyUpdate = (cls) => {
-      const updated = {
-        ...selectedTask,
-        ...form,
-        tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean),
-        ...cls,
-      };
+      const updated = { ...selectedTask, ...form, tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean), ...cls };
       setTasks((prev) => prev.map((t) => t.id === selectedTask.id ? updated : t));
     };
 
@@ -338,8 +430,7 @@ export default function App() {
       setClassifying(true);
       try {
         const cls = await classifyWithLLM(form);
-        setClassResult(cls);
-        applyUpdate(cls);
+        setClassResult(cls); applyUpdate(cls);
         setClassifying(false); setSaving(false);
         setTimeout(() => { setClassResult(null); setSelectedTask(null); setForm(emptyForm()); setView("dashboard"); }, 2500);
       } catch (e) {
@@ -355,30 +446,18 @@ export default function App() {
   const openEdit = (t) => {
     setSelectedTask(t);
     setForm({
-      title: t.title,
-      requester: t.requester || "",
-      owner: t.owner || "",
-      due_date: t.due_date || "",
-      status: t.status,
-      priority: t.priority,
+      title: t.title, requester: t.requester || "", owner: t.owner || "",
+      due_date: t.due_date || "", status: t.status, priority: t.priority,
       effort_estimate: t.effort_estimate,
       tags: Array.isArray(t.tags) ? t.tags.join(", ") : "",
-      background: t.background || "",
-      request: t.request || "",
-      as_is: t.as_is || "",
-      to_be: t.to_be || "",
-      constraints: t.constraints || "",
+      background: t.background || "", request: t.request || "",
+      as_is: t.as_is || "", to_be: t.to_be || "", constraints: t.constraints || "",
       notes: t.notes || "",
-      primary_category: t.primary_category || "",
-      primary_sub: t.primary_sub || "",
-      secondary_category: t.secondary_category || "",
-      secondary_sub: t.secondary_sub || "",
+      primary_category: t.primary_category || "", primary_sub: t.primary_sub || "",
+      secondary_category: t.secondary_category || "", secondary_sub: t.secondary_sub || "",
       classification_note: t.classification_note || "",
     });
-    setUseLLM(false);
-    setError("");
-    setClassResult(null);
-    setView("edit");
+    setUseLLM(false); setError(""); setClassResult(null); setView("edit");
   };
 
   const filteredTasks = tasks.filter((t) => {
@@ -387,8 +466,8 @@ export default function App() {
     return catOk && stOk;
   });
 
-  const catCounts    = Object.keys(FRAMEWORK).reduce((acc, cat) => { acc[cat] = tasks.filter((t) => t.primary_category === cat).length; return acc; }, {});
-  const statusCounts = Object.keys(STATUS_STYLES).reduce((acc, s)  => { acc[s]   = tasks.filter((t) => t.status === s).length; return acc; }, {});
+  const catCounts    = Object.keys(FRAMEWORK).reduce((a, c) => { a[c] = tasks.filter((t) => t.primary_category === c).length; return a; }, {});
+  const statusCounts = Object.keys(STATUS_STYLES).reduce((a, s) => { a[s] = tasks.filter((t) => t.status === s).length; return a; }, {});
 
   const navTo = (v) => {
     if (v === "form") setUseLLM(true);
@@ -398,7 +477,6 @@ export default function App() {
   // ── 폼 공통 렌더 ─────────────────────────────────────────────
   const renderFormBody = (isEdit) => (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      {/* 기본 정보 */}
       <div className="card">
         <div style={{ fontSize: 12, fontWeight: 600, color: "#334155", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 16 }}>기본 정보</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -447,7 +525,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Task 내용 */}
       <div className="card" style={{ borderColor: "#1a2d4a" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: "#334155", textTransform: "uppercase", letterSpacing: ".06em" }}>Task 내용</div>
@@ -470,7 +547,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* 수동 분류 */}
       {!useLLM && (
         <div className="card fade-in" style={{ borderColor: "#C3A6FF40", background: "#1a0d2e" }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: "#C3A6FF", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 16 }}>수동 분류</div>
@@ -513,12 +589,10 @@ export default function App() {
         </div>
       )}
 
-      {/* 에러 */}
       {error && (
         <div style={{ color: "#f87171", fontSize: 13, padding: "10px 14px", background: "#1f0d0d", borderRadius: 8, border: "1px solid #ef444430" }}>{error}</div>
       )}
 
-      {/* 버튼 */}
       <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
         <button className="btn-ghost" onClick={() => isEdit ? navTo("dashboard") : setForm(emptyForm())}>
           {isEdit ? "← 취소" : "초기화"}
@@ -541,7 +615,7 @@ export default function App() {
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700&family=DM+Mono:wght@400;500&family=Noto+Sans+KR:wght@300;400;500;700&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: #0f1629; }
         ::-webkit-scrollbar-thumb { background: #2a3a5c; border-radius: 3px; }
         input, textarea, select { outline: none; font-family: inherit; }
@@ -559,8 +633,7 @@ export default function App() {
         .btn-sm { background: transparent; border: 1px solid #1e2d4a; border-radius: 6px; color: #64748b; padding: 6px 12px; font-size: 12px; cursor: pointer; transition: all .2s; }
         .btn-sm:hover { border-color: #4ECDC4; color: #4ECDC4; }
         .card { background: #0f1629; border: 1px solid #1e2d4a; border-radius: 12px; padding: 20px; }
-        .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 500; }
-        .task-row { display: grid; grid-template-columns: ${GRID}; gap: 10px; align-items: center; padding: 12px 16px; border-bottom: 1px solid #0f1629; transition: background .15s; cursor: pointer; }
+        .pill { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 500; }
         .task-row:hover { background: #111827; }
         .spin { animation: spin 1s linear infinite; }
         @keyframes spin { to { transform: rotate(360deg); } }
@@ -585,7 +658,7 @@ export default function App() {
         </nav>
       </header>
 
-      <main style={{ maxWidth: 1400, margin: "0 auto", padding: "32px 24px" }}>
+      <main style={{ maxWidth: 1600, margin: "0 auto", padding: "32px 24px" }}>
 
         {/* ══ 대시보드 ══ */}
         {view === "dashboard" && (
@@ -601,24 +674,60 @@ export default function App() {
               ))}
             </div>
 
-            {/* 상태 필터 */}
-            <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
-              {["전체", ...Object.keys(STATUS_STYLES)].map((s) => (
-                <button key={s} onClick={() => setFilterStatus(s)}
-                  className="pill" style={{ background: filterStatus === s ? "#1e2d4a" : "transparent", border: `1px solid ${filterStatus === s ? "#4ECDC4" : "#1e2d4a"}`, color: filterStatus === s ? "#4ECDC4" : "#64748b", cursor: "pointer", padding: "6px 14px", fontSize: 12 }}>
-                  {s !== "전체" && <span style={{ width: 6, height: 6, borderRadius: "50%", background: STATUS_STYLES[s].dot, display: "inline-block" }} />}
-                  {s}{s !== "전체" && statusCounts[s] > 0 && ` (${statusCounts[s]})`}
+            {/* 상태 필터 + 열 설정 */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, gap: 12 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {["전체", ...Object.keys(STATUS_STYLES)].map((s) => (
+                  <button key={s} onClick={() => setFilterStatus(s)}
+                    className="pill" style={{ background: filterStatus === s ? "#1e2d4a" : "transparent", border: `1px solid ${filterStatus === s ? "#4ECDC4" : "#1e2d4a"}`, color: filterStatus === s ? "#4ECDC4" : "#64748b", cursor: "pointer", padding: "6px 14px", fontSize: 12 }}>
+                    {s !== "전체" && <span style={{ width: 6, height: 6, borderRadius: "50%", background: STATUS_STYLES[s].dot, display: "inline-block" }} />}
+                    {s}{s !== "전체" && statusCounts[s] > 0 && ` (${statusCounts[s]})`}
+                  </button>
+                ))}
+              </div>
+
+              {/* 열 설정 버튼 */}
+              <div style={{ position: "relative", flexShrink: 0 }}>
+                <button className="btn-sm" onClick={() => setShowColPanel((v) => !v)}
+                  style={{ borderColor: showColPanel ? "#4ECDC4" : "#1e2d4a", color: showColPanel ? "#4ECDC4" : "#64748b", display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 13 }}>⊞</span> 열 설정
+                  {visibleOptCols.length > 0 && (
+                    <span style={{ background: "#4ECDC4", color: "#090e1a", borderRadius: 10, fontSize: 10, fontWeight: 700, padding: "1px 6px" }}>{visibleOptCols.length}</span>
+                  )}
                 </button>
-              ))}
+                {showColPanel && (
+                  <ColSettingsPanel
+                    colConfig={colConfig}
+                    onToggle={toggleCol}
+                    onMove={moveCol}
+                    onClose={() => setShowColPanel(false)}
+                  />
+                )}
+              </div>
             </div>
 
             {/* Task 테이블 */}
-            <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+            <div className="card" style={{ padding: 0, overflow: "auto" }}>
               {/* 헤더 행 */}
-              <div style={{ display: "grid", gridTemplateColumns: GRID, gap: 10, padding: "10px 16px", borderBottom: "1px solid #1e2d4a", background: "#080c18" }}>
-                {HEADERS.map((h, i) => (
-                  <div key={i} style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".08em", color: "#334155" }}>{h}</div>
+              <div style={{ display: "grid", gridTemplateColumns: gridTemplate, gap: 0, padding: "0 16px", borderBottom: "1px solid #1e2d4a", background: "#080c18", minWidth: "max-content" }}>
+                {/* 고정 좌측 */}
+                {[
+                  { label: "분류 (대/중)", style: { padding: "10px 8px 10px 0" } },
+                  { label: "Task", style: { padding: "10px 8px" } },
+                ].map(({ label, style }) => (
+                  <div key={label} style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".08em", color: "#334155", ...style }}>{label}</div>
                 ))}
+                {/* 선택 열 */}
+                {visibleOptCols.map((col) => (
+                  <div key={col.id} style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".08em", color: "#334155", padding: "10px 8px" }}>{col.label}</div>
+                ))}
+                {/* 26년 분기 — 4개 별도 셀 */}
+                {["26.1Q","26.2Q","26.3Q","26.4Q"].map((q, i) => (
+                  <div key={q} style={{ fontSize: 10, fontWeight: 700, letterSpacing: ".06em", color: "#4ECDC480", padding: "10px 0", textAlign: "center", borderLeft: i > 0 ? "1px solid #1a2540" : "none" }}>{q}</div>
+                ))}
+                {/* 고정 우측 */}
+                <div style={{ fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".08em", color: "#334155", padding: "10px 8px" }}>비고</div>
+                <div />
               </div>
 
               {filteredTasks.length === 0 ? (
@@ -628,19 +737,19 @@ export default function App() {
                 </div>
               ) : filteredTasks.map((t) => {
                 const catColor = FRAMEWORK[t.primary_category]?.color || "#64748b";
-                const st = STATUS_STYLES[t.status] || STATUS_STYLES["대기중"];
                 return (
-                  <div key={t.id} className="task-row" onClick={() => openEdit(t)}>
-                    {/* 분류 (대/중) */}
-                    <div>
+                  <div
+                    key={t.id}
+                    className="task-row"
+                    onClick={() => openEdit(t)}
+                    style={{ display: "grid", gridTemplateColumns: gridTemplate, gap: 0, alignItems: "center", padding: "11px 16px", borderBottom: "1px solid #0f1629", cursor: "pointer", transition: "background .15s", minWidth: "max-content" }}
+                  >
+                    {/* 분류 */}
+                    <div style={{ paddingRight: 8 }}>
                       {t.primary_category ? (
                         <>
-                          <div style={{ fontSize: 11, fontWeight: 700, color: catColor, marginBottom: 2 }}>
-                            {t.primary_category}
-                          </div>
-                          <div style={{ fontSize: 10, color: "#475569", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                            {t.primary_code} {t.primary_sub}
-                          </div>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: catColor, marginBottom: 2 }}>{t.primary_category}</div>
+                          <div style={{ fontSize: 10, color: "#475569", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.primary_code} {t.primary_sub}</div>
                         </>
                       ) : (
                         <span style={{ fontSize: 11, color: "#334155" }}>미분류</span>
@@ -648,30 +757,30 @@ export default function App() {
                     </div>
 
                     {/* ID + 제목 */}
-                    <div>
+                    <div style={{ paddingRight: 8, overflow: "hidden" }}>
                       <div style={{ fontSize: 10, color: "#4ECDC4", fontFamily: "'DM Mono',monospace", marginBottom: 2 }}>{t.id}</div>
                       <div style={{ fontSize: 13, fontWeight: 500, color: "#e2e8f0", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.title}</div>
                     </div>
 
-                    {/* Gantt */}
-                    <GanttBar createdDate={t.created_date} dueDate={t.due_date} color={catColor} />
+                    {/* 선택 열 */}
+                    {visibleOptCols.map((col) => (
+                      <div key={col.id} style={{ paddingRight: 8, overflow: "hidden" }}>
+                        {renderColCell(col.id, t)}
+                      </div>
+                    ))}
 
-                    {/* 담당자 */}
-                    <span style={{ fontSize: 12, color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.owner || "-"}</span>
-
-                    {/* 상태 */}
-                    <span className="pill" style={{ background: `${st.dot}18`, color: st.color, border: `1px solid ${st.dot}30`, justifySelf: "start" }}>
-                      <span style={{ width: 5, height: 5, borderRadius: "50%", background: st.dot, display: "inline-block" }} />{t.status}
-                    </span>
-
-                    {/* 우선순위 */}
-                    <span style={{ fontSize: 12, fontWeight: 600, color: PRIORITY_COLORS[t.priority] || "#94a3b8" }}>{t.priority}</span>
+                    {/* Gantt — 4열 span */}
+                    <div style={{ gridColumn: "span 4" }}>
+                      <GanttBar createdDate={t.created_date} dueDate={t.due_date} color={catColor} />
+                    </div>
 
                     {/* 비고 */}
-                    <span style={{ fontSize: 11, color: "#475569", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.notes || "-"}</span>
+                    <div style={{ paddingLeft: 8, overflow: "hidden" }}>
+                      <span style={{ fontSize: 11, color: "#475569", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{t.notes || "—"}</span>
+                    </div>
 
                     {/* MD 다운로드 */}
-                    <button className="btn-sm" onClick={(e) => { e.stopPropagation(); downloadMD(t); }} title="MD 다운로드" style={{ padding: "4px 8px" }}>↓</button>
+                    <button className="btn-sm" onClick={(e) => { e.stopPropagation(); downloadMD(t); }} title="MD 다운로드" style={{ padding: "4px 8px", justifySelf: "center" }}>↓</button>
                   </div>
                 );
               })}
@@ -716,7 +825,6 @@ export default function App() {
                 {classResult.classification_note && <div style={{ fontSize: 12, color: "#64748b", marginTop: 8, fontStyle: "italic" }}>"{classResult.classification_note}"</div>}
               </div>
             )}
-
             {renderFormBody(false)}
           </div>
         )}
@@ -741,16 +849,14 @@ export default function App() {
             <p style={{ fontSize: 13, color: "#475569", marginBottom: 28 }}>
               {useLLM ? "저장 시 LLM이 분류를 재수행합니다." : "분류를 직접 수정하거나 기존 분류를 유지합니다."}
             </p>
-
             {classResult && (
               <div className="fade-in card" style={{ marginBottom: 20, borderColor: "#4ECDC4", background: "#0d2e2c" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ fontSize: 16 }}>✦</span>
                   <span style={{ fontSize: 13, fontWeight: 600, color: "#4ECDC4" }}>LLM 재분류 완료 — 대시보드로 이동합니다</span>
                 </div>
               </div>
             )}
-
             {renderFormBody(true)}
           </div>
         )}
