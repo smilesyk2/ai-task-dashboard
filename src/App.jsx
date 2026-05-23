@@ -177,14 +177,45 @@ function downloadMD(task) {
   URL.revokeObjectURL(url);
 }
 
+const SEED_TASKS = [
+  {
+    id: "TASK-001",
+    title: "Claude API 도입",
+    requester: "DT 전략기획",
+    owner: "서동호",
+    due_date: "2026-06-30",
+    status: "대기중",
+    priority: "Medium",
+    effort_estimate: "M",
+    tags: ["LLM", "사외API", "생산성"],
+    background: "",
+    request: "",
+    as_is: "",
+    to_be: "사외 LLM 도입을 통한 DT 개발 생산성 향상",
+    constraints: "",
+    created_date: "2026-05-23",
+    history: [{ date: "2026-05-23", content: "Task 생성", author: "서동호" }],
+    primary_category: "Infra",
+    primary_code: "I-01",
+    primary_sub: "클라우드/서버/GPU 인프라",
+    secondary_category: null,
+    secondary_code: null,
+    secondary_sub: null,
+    classification_note: "사외 LLM(Claude API) 연동을 위한 인프라 구성",
+  },
+];
+
 // ════════════════════════════════════════════════════════════════
 // 메인 앱
 // ════════════════════════════════════════════════════════════════
 export default function App() {
   const [view, setView] = useState("dashboard"); // dashboard | form | detail
   const [tasks, setTasks] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("ai_tasks") || "[]"); }
-    catch { return []; }
+    try {
+      const stored = JSON.parse(localStorage.getItem("ai_tasks") || "[]");
+      return stored.length > 0 ? stored : SEED_TASKS;
+    }
+    catch { return SEED_TASKS; }
   });
   const [form, setForm] = useState(emptyForm());
   const [useLLM, setUseLLM] = useState(true);
