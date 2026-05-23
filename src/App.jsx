@@ -104,7 +104,20 @@ const emptyForm = () => ({
   due_date: "", status: "대기중", priority: "Medium",
   effort_estimate: "M", tags: "",
   background: "", request: "", as_is: "", to_be: "", constraints: "",
+  primary_category: "", primary_sub: "",
+  secondary_category: "", secondary_sub: "",
+  classification_note: "",
 });
+
+function getPrimaryCode(cat, sub) {
+  if (!cat || !sub) return "";
+  const idx = FRAMEWORK[cat]?.items.indexOf(sub);
+  return idx >= 0 ? `${CATEGORY_CODES[cat]}-${String(idx + 1).padStart(2, "0")}` : "";
+}
+
+function getSecondaryCode(cat, sub) {
+  return getPrimaryCode(cat, sub);
+}
 
 // ── MD Export 유틸 ───────────────────────────────────────────────
 function taskToMarkdown(task) {
@@ -174,6 +187,7 @@ export default function App() {
     catch { return []; }
   });
   const [form, setForm] = useState(emptyForm());
+  const [useLLM, setUseLLM] = useState(true);
   const [classifying, setClassifying] = useState(false);
   const [classResult, setClassResult] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
@@ -188,30 +202,53 @@ export default function App() {
 
   const handleSave = async () => {
     if (!form.title.trim()) { setError("제목은 필수입니다."); return; }
+    if (!useLLM && !form.primary_category) { setError("1차 카테고리를 선택해주세요."); return; }
     setError("");
     setSaving(true);
-    setClassifying(true);
     setClassResult(null);
-    try {
-      const cls = await classifyWithLLM(form);
-      setClassResult(cls);
+
+    if (useLLM) {
+      setClassifying(true);
+      try {
+        const cls = await classifyWithLLM(form);
+        setClassResult(cls);
+        const newTask = {
+          id: `TASK-${String(tasks.length + 1).padStart(3, "0")}`,
+          ...form,
+          tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean),
+          created_date: new Date().toISOString().split("T")[0],
+          history: [{ date: new Date().toISOString().split("T")[0], content: "Task 생성", author: form.owner || "-" }],
+          ...cls,
+        };
+        setTasks((prev) => [newTask, ...prev]);
+        setForm(emptyForm());
+        setClassifying(false);
+        setSaving(false);
+        setTimeout(() => { setClassResult(null); setView("dashboard"); }, 2500);
+      } catch (e) {
+        setError(e.message || "LLM 분류 중 오류가 발생했습니다.");
+        setClassifying(false);
+        setSaving(false);
+      }
+    } else {
       const newTask = {
         id: `TASK-${String(tasks.length + 1).padStart(3, "0")}`,
         ...form,
         tags: form.tags.split(",").map((t) => t.trim()).filter(Boolean),
         created_date: new Date().toISOString().split("T")[0],
         history: [{ date: new Date().toISOString().split("T")[0], content: "Task 생성", author: form.owner || "-" }],
-        ...cls,
+        primary_category: form.primary_category,
+        primary_code: getPrimaryCode(form.primary_category, form.primary_sub),
+        primary_sub: form.primary_sub,
+        secondary_category: form.secondary_category || null,
+        secondary_code: getSecondaryCode(form.secondary_category, form.secondary_sub) || null,
+        secondary_sub: form.secondary_sub || null,
+        classification_note: form.classification_note,
       };
       setTasks((prev) => [newTask, ...prev]);
       setForm(emptyForm());
-      setClassifying(false);
       setSaving(false);
-      setTimeout(() => { setClassResult(null); setView("dashboard"); }, 2500);
-    } catch (e) {
-      setError(e.message || "LLM 분류 중 오류가 발생했습니다.");
-      setClassifying(false);
-      setSaving(false);
+      setView("dashboard");
     }
   };
 
@@ -422,8 +459,22 @@ export default function App() {
         {/* ══ 등록 폼 ══ */}
         {view === "form" && (
           <div className="fade-in" style={{ maxWidth: 720, margin: "0 auto" }}>
-            <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Task 등록</h2>
-            <p style={{ fontSize: 13, color: "#475569", marginBottom: 28 }}>저장 시 LLM이 AI Readiness Framework 기준으로 자동 분류합니다.</p>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+              <h2 style={{ fontSize: 20, fontWeight: 700 }}>Task 등록</h2>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 12, color: useLLM ? "#4ECDC4" : "#64748b", fontWeight: 500 }}>LLM 자동 분류</span>
+                <button
+                  onClick={() => setUseLLM((v) => !v)}
+                  style={{ width: 44, height: 24, borderRadius: 12, background: useLLM ? "#4ECDC4" : "#1e2d4a", border: "none", cursor: "pointer", position: "relative", transition: "background .2s", flexShrink: 0 }}
+                >
+                  <span style={{ position: "absolute", top: 3, left: useLLM ? 23 : 3, width: 18, height: 18, borderRadius: "50%", background: "#fff", transition: "left .2s", display: "block" }} />
+                </button>
+                <span style={{ fontSize: 11, color: useLLM ? "#4ECDC4" : "#475569", fontWeight: 600, minWidth: 24 }}>{useLLM ? "ON" : "OFF"}</span>
+              </div>
+            </div>
+            <p style={{ fontSize: 13, color: "#475569", marginBottom: 28 }}>
+              {useLLM ? "저장 시 LLM이 AI Readiness Framework 기준으로 자동 분류합니다." : "카테고리를 직접 선택해서 저장합니다."}
+            </p>
 
             {classResult && (
               <div className="fade-in card" style={{ marginBottom: 20, borderColor: "#4ECDC4", background: "#0d2e2c" }}>
@@ -493,9 +544,9 @@ export default function App() {
               <div className="card" style={{ borderColor: "#1a2d4a" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: "#334155", textTransform: "uppercase", letterSpacing: ".06em" }}>Task 내용</div>
-                  <span style={{ fontSize: 10, color: "#4ECDC4", background: "#0d2e2c", padding: "2px 8px", borderRadius: 10, border: "1px solid #4ECDC430" }}>LLM 분류 기준</span>
+                  {useLLM && <span style={{ fontSize: 10, color: "#4ECDC4", background: "#0d2e2c", padding: "2px 8px", borderRadius: 10, border: "1px solid #4ECDC430" }}>LLM 분류 기준</span>}
                 </div>
-                <p style={{ fontSize: 11, color: "#334155", marginBottom: 16 }}>아래 내용이 자세할수록 분류 정확도가 높아집니다.</p>
+                <p style={{ fontSize: 11, color: "#334155", marginBottom: 16 }}>{useLLM ? "아래 내용이 자세할수록 분류 정확도가 높아집니다." : "배경·요청 내용을 입력하면 나중에 LLM 재분류도 가능합니다."}</p>
                 <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
                   {[
                     ["background","배경 및 목적 *","왜 이 Task가 필요한지, 어떤 문제를 해결하는지"],
@@ -512,6 +563,48 @@ export default function App() {
                 </div>
               </div>
 
+              {!useLLM && (
+                <div className="card fade-in" style={{ borderColor: "#C3A6FF40", background: "#1a0d2e" }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#C3A6FF", textTransform: "uppercase", letterSpacing: ".06em", marginBottom: 16 }}>수동 분류</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                      <div className="field">
+                        <label className="label">1차 카테고리 *</label>
+                        <select className="inp" value={form.primary_category} onChange={(e) => setForm((p) => ({ ...p, primary_category: e.target.value, primary_sub: "" }))}>
+                          <option value="">선택하세요</option>
+                          {Object.keys(FRAMEWORK).map((cat) => <option key={cat}>{cat}</option>)}
+                        </select>
+                      </div>
+                      <div className="field">
+                        <label className="label">1차 세부분류</label>
+                        <select className="inp" value={form.primary_sub} onChange={(e) => setForm((p) => ({ ...p, primary_sub: e.target.value }))} disabled={!form.primary_category}>
+                          <option value="">선택하세요</option>
+                          {(FRAMEWORK[form.primary_category]?.items || []).map((item) => <option key={item}>{item}</option>)}
+                        </select>
+                      </div>
+                      <div className="field">
+                        <label className="label">2차 카테고리 (선택)</label>
+                        <select className="inp" value={form.secondary_category} onChange={(e) => setForm((p) => ({ ...p, secondary_category: e.target.value, secondary_sub: "" }))}>
+                          <option value="">없음</option>
+                          {Object.keys(FRAMEWORK).map((cat) => <option key={cat}>{cat}</option>)}
+                        </select>
+                      </div>
+                      <div className="field">
+                        <label className="label">2차 세부분류</label>
+                        <select className="inp" value={form.secondary_sub} onChange={(e) => setForm((p) => ({ ...p, secondary_sub: e.target.value }))} disabled={!form.secondary_category}>
+                          <option value="">선택하세요</option>
+                          {(FRAMEWORK[form.secondary_category]?.items || []).map((item) => <option key={item}>{item}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="field">
+                      <label className="label">분류 근거 (선택)</label>
+                      <input className="inp" placeholder="분류 이유를 간단히 입력하세요 (50자 이내)" value={form.classification_note} onChange={(e) => setForm((p) => ({ ...p, classification_note: e.target.value }))} />
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {error && (
                 <div style={{ color: "#f87171", fontSize: 13, padding: "10px 14px", background: "#1f0d0d", borderRadius: 8, border: "1px solid #ef444430" }}>{error}</div>
               )}
@@ -524,7 +617,7 @@ export default function App() {
                       <span className="spin" style={{ display: "inline-block", width: 14, height: 14, border: "2px solid rgba(255,255,255,.3)", borderTopColor: "#fff", borderRadius: "50%" }} />
                       {classifying ? "LLM 분류 중…" : "저장 중…"}
                     </span>
-                  ) : "저장 + 자동 분류"}
+                  ) : useLLM ? "저장 + 자동 분류" : "저장"}
                 </button>
               </div>
             </div>
