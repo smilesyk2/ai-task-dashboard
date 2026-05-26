@@ -1,4 +1,16 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
+
+// ── API 클라이언트 ────────────────────────────────────────────────
+async function api(method, path, body) {
+  const res = await fetch(`/api${path}`, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    ...(body != null && { body: JSON.stringify(body) }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `API ${res.status}`);
+  return data;
+}
 
 // ── 기본 데이터 ───────────────────────────────────────────────────
 const DEFAULT_FRAMEWORK = {
@@ -198,13 +210,22 @@ const SEED_TASKS = [{
 // ═══════════════════════════════════════════════════════
 // LoginPage
 // ═══════════════════════════════════════════════════════
-function LoginPage({ users, onLogin }) {
+function LoginPage({ onLogin }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const submit = () => {
-    const u = users.find(u => u.username === username && u.password === password);
-    u ? onLogin(u) : setError("아이디 또는 비밀번호가 올바르지 않습니다.");
+  const [loading, setLoading] = useState(false);
+  const submit = async () => {
+    if (!username.trim() || !password.trim()) return;
+    setLoading(true); setError("");
+    try {
+      const user = await api("POST", "/auth/login", { username, password });
+      onLogin(user);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
   };
   return (
     <div style={{ minHeight:"100vh", background:"#090e1a", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'DM Sans','Noto Sans KR',sans-serif" }}>
@@ -226,9 +247,9 @@ function LoginPage({ users, onLogin }) {
               style={{ width:"100%", background:"#0a0f1e", border:"1px solid #1e2d4a", borderRadius:8, color:"#e2e8f0", padding:"10px 14px", fontSize:14 }} />
           </div>
           {error && <div style={{ color:"#f87171", fontSize:12 }}>{error}</div>}
-          <button onClick={submit}
-            style={{ background:"linear-gradient(135deg,#4ECDC4,#2a9d8f)", color:"#fff", border:"none", borderRadius:8, padding:"12px", fontSize:14, fontWeight:600, cursor:"pointer", marginTop:4 }}>
-            로그인
+          <button onClick={submit} disabled={loading}
+            style={{ background:"linear-gradient(135deg,#4ECDC4,#2a9d8f)", color:"#fff", border:"none", borderRadius:8, padding:"12px", fontSize:14, fontWeight:600, cursor:"pointer", marginTop:4, opacity:loading?.7:1 }}>
+            {loading ? "확인 중…" : "로그인"}
           </button>
         </div>
         <div style={{ marginTop:20, fontSize:11, color:"#334155", textAlign:"center" }}>기본 계정: admin / admin (관리자), user / user (사용자)</div>
@@ -240,7 +261,7 @@ function LoginPage({ users, onLogin }) {
 // ═══════════════════════════════════════════════════════
 // AdminPage
 // ═══════════════════════════════════════════════════════
-function AdminPage({ framework, setFramework, statuses, setStatuses, priorities, setPriorities, efforts, setEfforts, users, setUsers, llmConfig, setLlmConfig, currentUser, onBack }) {
+function AdminPage({ framework, saveFramework, statuses, saveStatuses, priorities, savePriorities, efforts, saveEfforts, users, onAddUser, onUpdateUser, onDeleteUser, llmConfig, setLlmConfig, currentUser, onBack }) {
   const [tab, setTab] = useState("framework");
   const [selCat, setSelCat] = useState(Object.keys(framework)[0]);
   const [newCatName, setNewCatName] = useState(""); const [newCatCode, setNewCatCode] = useState(""); const [newCatColor, setNewCatColor] = useState("#4ECDC4");
@@ -249,12 +270,6 @@ function AdminPage({ framework, setFramework, statuses, setStatuses, priorities,
   const [newPriority, setNewPriority] = useState(""); const [newPriorityColor, setNewPriorityColor] = useState("#ff4d6d");
   const [newEffort, setNewEffort] = useState("");
   const [newUser, setNewUser] = useState({ username:"", password:"", name:"", role:"user" });
-
-  const saveFramework = (fw) => { setFramework(fw); localStorage.setItem("ai_framework", JSON.stringify(fw)); };
-  const saveStatuses = (s) => { setStatuses(s); localStorage.setItem("ai_statuses", JSON.stringify(s)); };
-  const savePriorities = (p) => { setPriorities(p); localStorage.setItem("ai_priorities", JSON.stringify(p)); };
-  const saveEfforts = (e) => { setEfforts(e); localStorage.setItem("ai_efforts", JSON.stringify(e)); };
-  const saveUsers = (u) => { setUsers(u); localStorage.setItem("ai_users", JSON.stringify(u)); };
 
   const addCat = () => {
     if (!newCatName.trim()||!newCatCode.trim()||framework[newCatName]) return;
@@ -435,7 +450,7 @@ function AdminPage({ framework, setFramework, statuses, setStatuses, priorities,
                       <td style={{ padding:"10px 10px", fontSize:13, color:"#e2e8f0" }}>{u.name}</td>
                       <td style={{ padding:"10px 10px", fontSize:13, color:"#64748b", fontFamily:"monospace" }}>{u.username}</td>
                       <td style={{ padding:"10px 10px" }}>
-                        <select value={u.role} onChange={e=>saveUsers(users.map(x=>x.id===u.id?{...x,role:e.target.value}:x))}
+                        <select value={u.role} onChange={e=>onUpdateUser(u.id,{role:e.target.value})}
                           disabled={u.id===currentUser.id}
                           style={{ background:"#0a0f1e", border:"1px solid #1e2d4a", borderRadius:4, color:u.role==="manager"?"#C3A6FF":"#94a3b8", padding:"4px 8px", fontSize:12 }}>
                           <option value="manager">manager</option>
@@ -444,7 +459,7 @@ function AdminPage({ framework, setFramework, statuses, setStatuses, priorities,
                       </td>
                       <td style={{ padding:"10px 10px" }}>
                         {u.id!==currentUser.id && (
-                          <button onClick={()=>saveUsers(users.filter(x=>x.id!==u.id))}
+                          <button onClick={()=>onDeleteUser(u.id)}
                             style={{ background:"transparent", border:"1px solid #1e2d4a", borderRadius:4, color:"#f87171", padding:"4px 10px", fontSize:12, cursor:"pointer" }}>삭제</button>
                         )}
                       </td>
@@ -472,10 +487,10 @@ function AdminPage({ framework, setFramework, statuses, setStatuses, priorities,
                     <option value="manager">manager</option>
                   </select>
                 </div>
-                <button onClick={()=>{
+                <button onClick={async ()=>{
                   if(!newUser.username.trim()||!newUser.password.trim()||!newUser.name.trim()) return;
-                  saveUsers([...users,{...newUser,id:Date.now()}]);
-                  setNewUser({username:"",password:"",name:"",role:"user"});
+                  try { await onAddUser(newUser); setNewUser({username:"",password:"",name:"",role:"user"}); }
+                  catch(e) { alert(e.message); }
                 }} style={{ background:"linear-gradient(135deg,#4ECDC4,#2a9d8f)", border:"none", borderRadius:8, color:"#fff", padding:"10px", fontSize:14, fontWeight:600, cursor:"pointer", marginTop:4 }}>
                   추가
                 </button>
@@ -633,15 +648,16 @@ function ColumnConfigPanel({ colConfig, setColConfig, onClose }) {
 // 메인 App
 // ═══════════════════════════════════════════════════════
 export default function App() {
-  const [currentUser, setCurrentUser] = useState(() => { try { return JSON.parse(localStorage.getItem("ai_current_user")); } catch { return null; } });
-  const [framework, setFramework] = useState(() => { try { const s=localStorage.getItem("ai_framework"); return s?JSON.parse(s):DEFAULT_FRAMEWORK; } catch { return DEFAULT_FRAMEWORK; } });
-  const [statuses, setStatuses] = useState(() => { try { const s=localStorage.getItem("ai_statuses"); return s?JSON.parse(s):DEFAULT_STATUSES; } catch { return DEFAULT_STATUSES; } });
-  const [priorities, setPriorities] = useState(() => { try { const s=localStorage.getItem("ai_priorities"); return s?JSON.parse(s):DEFAULT_PRIORITIES; } catch { return DEFAULT_PRIORITIES; } });
-  const [efforts, setEfforts] = useState(() => { try { const s=localStorage.getItem("ai_efforts"); return s?JSON.parse(s):DEFAULT_EFFORTS; } catch { return DEFAULT_EFFORTS; } });
-  const [users, setUsers] = useState(() => { try { const s=localStorage.getItem("ai_users"); return s?JSON.parse(s):DEFAULT_USERS; } catch { return DEFAULT_USERS; } });
-  const [tasks, setTasks] = useState(() => { try { const s=JSON.parse(localStorage.getItem("ai_tasks")||"[]"); return s.length>0?s:SEED_TASKS; } catch { return SEED_TASKS; } });
-  const [colConfig, setColConfig] = useState(() => { try { const s=localStorage.getItem("ai_col_config"); return s?JSON.parse(s):DEFAULT_COL_CONFIG; } catch { return DEFAULT_COL_CONFIG; } });
-  const [llmConfig, setLlmConfig] = useState(() => { try { const s=localStorage.getItem("ai_llm_config"); return s?{...DEFAULT_LLM_CONFIG,...JSON.parse(s)}:DEFAULT_LLM_CONFIG; } catch { return DEFAULT_LLM_CONFIG; } });
+  const [currentUser, setCurrentUser] = useState(() => { try { return JSON.parse(sessionStorage.getItem("ai_current_user")); } catch { return null; } });
+  const [framework, setFramework]     = useState(DEFAULT_FRAMEWORK);
+  const [statuses, setStatuses]       = useState(DEFAULT_STATUSES);
+  const [priorities, setPriorities]   = useState(DEFAULT_PRIORITIES);
+  const [efforts, setEfforts]         = useState(DEFAULT_EFFORTS);
+  const [users, setUsers]             = useState([]);
+  const [tasks, setTasks]             = useState([]);
+  const [colConfig, setColConfig]     = useState(DEFAULT_COL_CONFIG);
+  const [llmConfig, setLlmConfig]     = useState(DEFAULT_LLM_CONFIG);
+  const [appLoading, setAppLoading]   = useState(true);
   const [view, setView] = useState("dashboard");
   const [form, setForm] = useState(emptyForm());
   const [selectedTask, setSelectedTask] = useState(null);
@@ -655,10 +671,42 @@ export default function App() {
   const [showColPanel, setShowColPanel] = useState(false);
   const colPanelRef = useRef(null);
 
-  useEffect(() => { localStorage.setItem("ai_tasks", JSON.stringify(tasks)); }, [tasks]);
-  useEffect(() => { localStorage.setItem("ai_col_config", JSON.stringify(colConfig)); }, [colConfig]);
-  useEffect(() => { localStorage.setItem("ai_llm_config", JSON.stringify(llmConfig)); }, [llmConfig]);
-  useEffect(() => { if(currentUser) localStorage.setItem("ai_current_user", JSON.stringify(currentUser)); else localStorage.removeItem("ai_current_user"); }, [currentUser]);
+  // 세션 유지 (sessionStorage)
+  useEffect(() => {
+    if (currentUser) sessionStorage.setItem("ai_current_user", JSON.stringify(currentUser));
+    else sessionStorage.removeItem("ai_current_user");
+  }, [currentUser]);
+
+  // 초기 데이터 로드
+  useEffect(() => {
+    Promise.all([api("GET", "/config"), api("GET", "/tasks"), api("GET", "/users")])
+      .then(([cfg, ts, us]) => {
+        setFramework(cfg.framework || DEFAULT_FRAMEWORK);
+        setStatuses(cfg.statuses?.length   ? cfg.statuses   : DEFAULT_STATUSES);
+        setPriorities(cfg.priorities?.length? cfg.priorities : DEFAULT_PRIORITIES);
+        setEfforts(cfg.efforts?.length      ? cfg.efforts    : DEFAULT_EFFORTS);
+        setColConfig(cfg.colConfig?.length  ? cfg.colConfig  : DEFAULT_COL_CONFIG);
+        setLlmConfig({ ...DEFAULT_LLM_CONFIG, ...cfg.llmConfig });
+        setTasks(ts);
+        setUsers(us);
+      })
+      .catch(err => console.error("데이터 로드 실패:", err))
+      .finally(() => setAppLoading(false));
+  }, []);
+
+  // colConfig 변경 시 DB 저장 (디바운스)
+  useEffect(() => {
+    if (appLoading) return;
+    const t = setTimeout(() => api("PUT", "/config/col-config", colConfig).catch(console.error), 600);
+    return () => clearTimeout(t);
+  }, [colConfig, appLoading]);
+
+  // llmConfig 변경 시 DB 저장 (디바운스)
+  useEffect(() => {
+    if (appLoading) return;
+    const t = setTimeout(() => api("PUT", "/config/llm", llmConfig).catch(console.error), 600);
+    return () => clearTimeout(t);
+  }, [llmConfig, appLoading]);
 
   // 외부 클릭 시 컬럼 패널 닫기
   useEffect(() => {
@@ -669,14 +717,22 @@ export default function App() {
   const statusMap = Object.fromEntries(statuses.map(s=>[s.name,s]));
   const priorityMap = Object.fromEntries(priorities.map(p=>[p.name,p]));
 
-  if (!currentUser) return <LoginPage users={users} onLogin={u=>{setCurrentUser(u);}} />;
+  if (!currentUser) return <LoginPage onLogin={u=>{setCurrentUser(u);}} />;
+  if (appLoading) return (
+    <div style={{ minHeight:"100vh", background:"#090e1a", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'DM Sans',sans-serif", color:"#64748b", flexDirection:"column", gap:16 }}>
+      <div style={{ width:40, height:40, border:"3px solid #1e2d4a", borderTopColor:"#4ECDC4", borderRadius:"50%", animation:"spin 1s linear infinite" }} />
+      <style>{`@keyframes spin{to{transform:rotate(360deg);}}`}</style>
+      <span style={{ fontSize:13 }}>데이터 로드 중…</span>
+    </div>
+  );
   if (view==="admin") return (
-    <AdminPage framework={framework} setFramework={setFramework}
-      statuses={statuses} setStatuses={setStatuses}
-      priorities={priorities} setPriorities={setPriorities}
-      efforts={efforts} setEfforts={setEfforts}
-      users={users} setUsers={setUsers}
-      llmConfig={llmConfig} setLlmConfig={setLlmConfig}
+    <AdminPage
+      framework={framework}   saveFramework={saveFramework}
+      statuses={statuses}     saveStatuses={saveStatuses}
+      priorities={priorities} savePriorities={savePriorities}
+      efforts={efforts}       saveEfforts={saveEfforts}
+      users={users}           onAddUser={addUser} onUpdateUser={updateUser} onDeleteUser={deleteUser}
+      llmConfig={llmConfig}   setLlmConfig={setLlmConfig}
       currentUser={currentUser}
       onBack={()=>setView("dashboard")} />
   );
@@ -690,16 +746,15 @@ export default function App() {
     if (!useLLM && !form.readiness[0].category) { setError("1차 카테고리를 선택해주세요."); return; }
     setError(""); setSaving(true); setClassResult(null);
     const today = new Date().toISOString().split("T")[0];
-    const base = {
-      id:`TASK-${String(tasks.length+1).padStart(3,"0")}`,
+    const payload = {
       title:form.title, requester:form.requester, owner:form.owner,
-      start_date:form.start_date, due_date:form.due_date,
+      start_date:form.start_date||null, due_date:form.due_date||null,
       status:form.status, priority:form.priority, effort_estimate:form.effort_estimate,
       tags:form.tags.split(",").map(t=>t.trim()).filter(Boolean),
       background:form.background, request:form.request, as_is:form.as_is, to_be:form.to_be,
       constraints:form.constraints, notes:form.notes,
       created_date:today, history:[{date:today,content:"Task 생성",author:form.owner||"-"}],
-      readiness: buildReadiness(form.readiness),
+      readiness:buildReadiness(form.readiness),
     };
     if (useLLM) {
       setClassifying(true);
@@ -707,43 +762,49 @@ export default function App() {
         const cls = await classifyWithLLM(form, framework, llmConfig);
         setClassResult(cls);
         const r0 = { alias:form.readiness[0].alias||"", category:cls.primary_category, code:cls.primary_code||getPrimaryCode(cls.primary_category,cls.primary_sub,framework), sub:cls.primary_sub, note:cls.classification_note };
-        setTasks(p=>[{...base, readiness:[r0,...base.readiness.slice(1)]},...p]);
+        const saved = await api("POST", "/tasks", { ...payload, readiness:[r0,...payload.readiness.slice(1)] });
+        setTasks(p=>[saved,...p]);
         setForm(emptyForm()); setClassifying(false); setSaving(false);
         setTimeout(()=>{setClassResult(null);setView("dashboard");},2500);
       } catch(e) { setError(e.message); setClassifying(false); setSaving(false); }
     } else {
-      setTasks(p=>[{...base},...p]);
-      setForm(emptyForm()); setSaving(false); setView("dashboard");
+      try {
+        const saved = await api("POST", "/tasks", payload);
+        setTasks(p=>[saved,...p]);
+        setForm(emptyForm()); setSaving(false); setView("dashboard");
+      } catch(e) { setError(e.message); setSaving(false); }
     }
   };
 
   const handleUpdate = async () => {
     if (!form.title.trim()) { setError("제목은 필수입니다."); return; }
     setError(""); setSaving(true); setClassResult(null);
-    const apply = (rdList) => {
-      setTasks(p=>p.map(t=>t.id===selectedTask.id ? {
-        ...t, title:form.title, requester:form.requester, owner:form.owner,
-        start_date:form.start_date, due_date:form.due_date,
-        status:form.status, priority:form.priority, effort_estimate:form.effort_estimate,
-        tags:form.tags.split(",").map(x=>x.trim()).filter(Boolean),
-        background:form.background, request:form.request, as_is:form.as_is, to_be:form.to_be,
-        constraints:form.constraints, notes:form.notes,
-        readiness: rdList,
-      } : t));
+    const payload = {
+      title:form.title, requester:form.requester, owner:form.owner,
+      start_date:form.start_date||null, due_date:form.due_date||null,
+      status:form.status, priority:form.priority, effort_estimate:form.effort_estimate,
+      tags:form.tags.split(",").map(x=>x.trim()).filter(Boolean),
+      background:form.background, request:form.request, as_is:form.as_is, to_be:form.to_be,
+      constraints:form.constraints, notes:form.notes,
+      readiness:buildReadiness(form.readiness),
     };
+    const applyUpdate = (updated) => setTasks(p=>p.map(t=>t.id===selectedTask.id?updated:t));
     if (useLLM) {
       setClassifying(true);
       try {
         const cls = await classifyWithLLM(form, framework, llmConfig);
         setClassResult(cls);
         const r0 = { alias:form.readiness[0].alias||"", category:cls.primary_category, code:cls.primary_code||getPrimaryCode(cls.primary_category,cls.primary_sub,framework), sub:cls.primary_sub, note:cls.classification_note };
-        apply([r0, ...buildReadiness(form.readiness.slice(1))]);
-        setClassifying(false); setSaving(false);
+        const updated = await api("PUT", `/tasks/${selectedTask.id}`, { ...payload, readiness:[r0,...buildReadiness(form.readiness.slice(1))] });
+        applyUpdate(updated); setClassifying(false); setSaving(false);
         setTimeout(()=>{setClassResult(null);setSelectedTask(null);setForm(emptyForm());setView("dashboard");},2500);
       } catch(e) { setError(e.message); setClassifying(false); setSaving(false); }
     } else {
-      apply(buildReadiness(form.readiness));
-      setSelectedTask(null); setForm(emptyForm()); setSaving(false); setView("dashboard");
+      try {
+        const updated = await api("PUT", `/tasks/${selectedTask.id}`, payload);
+        applyUpdate(updated);
+        setSelectedTask(null); setForm(emptyForm()); setSaving(false); setView("dashboard");
+      } catch(e) { setError(e.message); setSaving(false); }
     }
   };
 
