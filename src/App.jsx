@@ -74,9 +74,10 @@ ${frameworkText}
 
 // ── 유틸 ─────────────────────────────────────────────────────────
 const emptyForm = () => ({
-  title:"", requester:"", owner:"", due_date:"", status:"대기중", priority:"Medium",
+  title:"", requester:"", owner:"", start_date:"", due_date:"", status:"대기중", priority:"Medium",
   effort_estimate:"M", tags:"", background:"", request:"", as_is:"", to_be:"",
-  constraints:"", notes:"", primary_category:"", primary_sub:"", classification_note:"",
+  constraints:"", notes:"",
+  readiness:[{ alias:"", category:"", sub:"", note:"" }],
 });
 
 function getPrimaryCode(cat, sub, framework) {
@@ -85,19 +86,24 @@ function getPrimaryCode(cat, sub, framework) {
   return idx >= 0 ? `${framework[cat].code}-${String(idx+1).padStart(2,"0")}` : "";
 }
 
-function calcGanttBar(createdDate, dueDate) {
+function getReadiness(task) {
+  if (task.readiness && task.readiness.length > 0) return task.readiness;
+  return [{ alias:"", category:task.primary_category||"", code:task.primary_code||"", sub:task.primary_sub||"", note:task.classification_note||"" }];
+}
+
+function calcGanttBar(startDate, dueDate) {
   const ys = new Date("2026-01-01").getTime(), ye = new Date("2026-12-31").getTime();
   const total = ye - ys;
-  const s = createdDate ? new Date(createdDate).getTime() : ys;
-  const e = dueDate     ? new Date(dueDate).getTime()     : ye;
+  const s = startDate ? new Date(startDate).getTime() : ys;
+  const e = dueDate   ? new Date(dueDate).getTime()   : ye;
   if (e < ys || s > ye) return null;
   const left  = ((Math.max(s,ys)-ys)/total)*100;
   const width = Math.max(((Math.min(e,ye)-Math.max(s,ys))/total)*100, 2);
   return { left: Math.min(left,98), width: Math.min(width,100-left) };
 }
 
-function GanttCell({ createdDate, dueDate, color }) {
-  const bar = calcGanttBar(createdDate, dueDate);
+function GanttCell({ startDate, dueDate, color }) {
+  const bar = calcGanttBar(startDate, dueDate);
   return (
     <div style={{ position:"relative", height:24, display:"flex", borderRadius:3, overflow:"hidden", background:"#0a0f1e" }}>
       {[0,1,2,3].map(i => (
@@ -504,29 +510,36 @@ export default function App() {
 
   const navTo = (v) => { if(v==="form") setUseLLM(true); setView(v); setSelectedTask(null); setForm(emptyForm()); setClassResult(null); setError(""); };
 
-  const buildCls = (f) => ({
-    primary_category: f.primary_category,
-    primary_code: getPrimaryCode(f.primary_category, f.primary_sub, framework),
-    primary_sub: f.primary_sub,
-    classification_note: f.classification_note,
-  });
+  const buildReadiness = (rdList) => rdList.map(r => ({ ...r, code: getPrimaryCode(r.category, r.sub, framework) }));
 
   const handleSave = async () => {
     if (!form.title.trim()) { setError("제목은 필수입니다."); return; }
-    if (!useLLM && !form.primary_category) { setError("1차 카테고리를 선택해주세요."); return; }
+    if (!useLLM && !form.readiness[0].category) { setError("1차 카테고리를 선택해주세요."); return; }
     setError(""); setSaving(true); setClassResult(null);
-    const base = { id:`TASK-${String(tasks.length+1).padStart(3,"0")}`, ...form, tags:form.tags.split(",").map(t=>t.trim()).filter(Boolean), created_date:new Date().toISOString().split("T")[0], history:[{date:new Date().toISOString().split("T")[0],content:"Task 생성",author:form.owner||"-"}] };
+    const today = new Date().toISOString().split("T")[0];
+    const base = {
+      id:`TASK-${String(tasks.length+1).padStart(3,"0")}`,
+      title:form.title, requester:form.requester, owner:form.owner,
+      start_date:form.start_date, due_date:form.due_date,
+      status:form.status, priority:form.priority, effort_estimate:form.effort_estimate,
+      tags:form.tags.split(",").map(t=>t.trim()).filter(Boolean),
+      background:form.background, request:form.request, as_is:form.as_is, to_be:form.to_be,
+      constraints:form.constraints, notes:form.notes,
+      created_date:today, history:[{date:today,content:"Task 생성",author:form.owner||"-"}],
+      readiness: buildReadiness(form.readiness),
+    };
     if (useLLM) {
       setClassifying(true);
       try {
         const cls = await classifyWithLLM(form, framework);
         setClassResult(cls);
-        setTasks(p=>[{...base,...cls},...p]);
+        const r0 = { alias:form.readiness[0].alias||"", category:cls.primary_category, code:cls.primary_code||getPrimaryCode(cls.primary_category,cls.primary_sub,framework), sub:cls.primary_sub, note:cls.classification_note };
+        setTasks(p=>[{...base, readiness:[r0,...base.readiness.slice(1)]},...p]);
         setForm(emptyForm()); setClassifying(false); setSaving(false);
         setTimeout(()=>{setClassResult(null);setView("dashboard");},2500);
       } catch(e) { setError(e.message); setClassifying(false); setSaving(false); }
     } else {
-      setTasks(p=>[{...base,...buildCls(form)},...p]);
+      setTasks(p=>[{...base},...p]);
       setForm(emptyForm()); setSaving(false); setView("dashboard");
     }
   };
@@ -534,25 +547,50 @@ export default function App() {
   const handleUpdate = async () => {
     if (!form.title.trim()) { setError("제목은 필수입니다."); return; }
     setError(""); setSaving(true); setClassResult(null);
-    const apply = (cls) => { setTasks(p=>p.map(t=>t.id===selectedTask.id?{...t,...form,tags:form.tags.split(",").map(x=>x.trim()).filter(Boolean),...cls}:t)); };
+    const apply = (rdList) => {
+      setTasks(p=>p.map(t=>t.id===selectedTask.id ? {
+        ...t, title:form.title, requester:form.requester, owner:form.owner,
+        start_date:form.start_date, due_date:form.due_date,
+        status:form.status, priority:form.priority, effort_estimate:form.effort_estimate,
+        tags:form.tags.split(",").map(x=>x.trim()).filter(Boolean),
+        background:form.background, request:form.request, as_is:form.as_is, to_be:form.to_be,
+        constraints:form.constraints, notes:form.notes,
+        readiness: rdList,
+      } : t));
+    };
     if (useLLM) {
       setClassifying(true);
       try {
         const cls = await classifyWithLLM(form, framework);
-        setClassResult(cls); apply(cls); setClassifying(false); setSaving(false);
+        setClassResult(cls);
+        const r0 = { alias:form.readiness[0].alias||"", category:cls.primary_category, code:cls.primary_code||getPrimaryCode(cls.primary_category,cls.primary_sub,framework), sub:cls.primary_sub, note:cls.classification_note };
+        apply([r0, ...buildReadiness(form.readiness.slice(1))]);
+        setClassifying(false); setSaving(false);
         setTimeout(()=>{setClassResult(null);setSelectedTask(null);setForm(emptyForm());setView("dashboard");},2500);
       } catch(e) { setError(e.message); setClassifying(false); setSaving(false); }
-    } else { apply(buildCls(form)); setSelectedTask(null); setForm(emptyForm()); setSaving(false); setView("dashboard"); }
+    } else {
+      apply(buildReadiness(form.readiness));
+      setSelectedTask(null); setForm(emptyForm()); setSaving(false); setView("dashboard");
+    }
   };
 
   const openEdit = (t) => {
     setSelectedTask(t);
-    setForm({ title:t.title, requester:t.requester||"", owner:t.owner||"", due_date:t.due_date||"", status:t.status, priority:t.priority, effort_estimate:t.effort_estimate, tags:Array.isArray(t.tags)?t.tags.join(", "):"", background:t.background||"", request:t.request||"", as_is:t.as_is||"", to_be:t.to_be||"", constraints:t.constraints||"", notes:t.notes||"", primary_category:t.primary_category||"", primary_sub:t.primary_sub||"", classification_note:t.classification_note||"" });
+    setForm({
+      title:t.title, requester:t.requester||"", owner:t.owner||"",
+      start_date:t.start_date||"", due_date:t.due_date||"",
+      status:t.status, priority:t.priority, effort_estimate:t.effort_estimate,
+      tags:Array.isArray(t.tags)?t.tags.join(", "):"",
+      background:t.background||"", request:t.request||"", as_is:t.as_is||"",
+      to_be:t.to_be||"", constraints:t.constraints||"", notes:t.notes||"",
+      readiness: getReadiness(t),
+    });
     setUseLLM(false); setError(""); setClassResult(null); setView("edit");
   };
 
-  const filtered = tasks.filter(t => (filterCat==="전체"||t.primary_category===filterCat) && (filterStatus==="전체"||t.status===filterStatus));
-  const catCounts = Object.keys(framework).reduce((a,c)=>{a[c]=tasks.filter(t=>t.primary_category===c).length;return a;},{});
+  const catCounts = Object.keys(framework).reduce((a,c)=>{a[c]=tasks.filter(t=>getReadiness(t).some(r=>r.category===c)).length;return a;},{});
+  const filtered = tasks.filter(t=>(filterCat==="전체"||getReadiness(t).some(r=>r.category===filterCat))&&(filterStatus==="전체"||t.status===filterStatus));
+  const filteredRows = filtered.flatMap(t=>getReadiness(t).map((r,ri)=>({t,r,ri})));
   const statusCounts = statuses.reduce((a,s)=>{a[s.name]=tasks.filter(t=>t.status===s.name).length;return a;},{});
   const visibleCols = colConfig.filter(c=>c.visible);
 
@@ -568,6 +606,7 @@ export default function App() {
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
             <div className="field"><label className="label">요청 부서/담당자</label><input className="inp" value={form.requester} onChange={e=>setForm(p=>({...p,requester:e.target.value}))} /></div>
             <div className="field"><label className="label">담당자</label><input className="inp" value={form.owner} onChange={e=>setForm(p=>({...p,owner:e.target.value}))} /></div>
+            <div className="field"><label className="label">시작일</label><input className="inp" type="date" value={form.start_date} onChange={e=>setForm(p=>({...p,start_date:e.target.value}))} style={{colorScheme:"dark"}} /></div>
             <div className="field"><label className="label">마감일</label><input className="inp" type="date" value={form.due_date} onChange={e=>setForm(p=>({...p,due_date:e.target.value}))} style={{colorScheme:"dark"}} /></div>
             <div className="field"><label className="label">상태</label>
               <select className="inp" value={form.status} onChange={e=>setForm(p=>({...p,status:e.target.value}))}>
@@ -602,7 +641,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Readiness 분류 (대분류+중분류만) */}
+      {/* Readiness 분류 */}
       <div className="card" style={{ borderColor:"#C3A6FF40", background:"#1a0d2e" }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
           <div className="section-title" style={{marginBottom:0,color:"#C3A6FF"}}>Readiness 분류</div>
@@ -613,26 +652,56 @@ export default function App() {
             </button>
           </div>
         </div>
-        {!useLLM && (
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:14 }}>
-            <div className="field"><label className="label">대분류 *</label>
-              <select className="inp" value={form.primary_category} onChange={e=>setForm(p=>({...p,primary_category:e.target.value,primary_sub:""}))}>
-                <option value="">선택하세요</option>
-                {Object.keys(framework).map(c=><option key={c}>{c}</option>)}
-              </select>
+        <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+          {form.readiness.map((r, ri) => (
+            <div key={ri} style={{ background:"#120920", border:"1px solid #2a1a4a", borderRadius:10, padding:14, position:"relative" }}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}>
+                <span style={{ fontSize:11, fontWeight:600, color:ri===0?"#C3A6FF":"#a78bfa", letterSpacing:".06em" }}>
+                  {ri===0 ? "① 1차 분류 (Primary)" : `② ${ri+1}차 분류`}
+                </span>
+                {ri > 0 && (
+                  <button onClick={()=>setForm(p=>({...p,readiness:p.readiness.filter((_,i)=>i!==ri)}))}
+                    style={{ background:"transparent", border:"none", color:"#f87171", cursor:"pointer", fontSize:18, lineHeight:1, padding:"0 4px" }}>×</button>
+                )}
+              </div>
+              {ri > 0 && (
+                <div className="field" style={{ marginBottom:10 }}>
+                  <label className="label" style={{ color:"#fb923c" }}>태스크 Alias * <span style={{ fontSize:10, color:"#64748b", fontWeight:400, textTransform:"none", letterSpacing:0 }}>sibling과 구분하는 짧은 이름</span></label>
+                  <input className="inp" placeholder="예: 데이터수집 관점, 인프라 관점 …" value={r.alias}
+                    onChange={e=>setForm(p=>({...p,readiness:p.readiness.map((x,i)=>i===ri?{...x,alias:e.target.value}:x)}))} />
+                </div>
+              )}
+              {ri===0 && useLLM ? (
+                <p style={{ fontSize:12, color:"#475569" }}>저장 시 LLM이 자동으로 대분류/중분류를 분류합니다.</p>
+              ) : (
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+                  <div className="field"><label className="label">대분류{ri===0?" *":""}</label>
+                    <select className="inp" value={r.category}
+                      onChange={e=>setForm(p=>({...p,readiness:p.readiness.map((x,i)=>i===ri?{...x,category:e.target.value,sub:""}:x)}))}>
+                      <option value="">선택하세요</option>
+                      {Object.keys(framework).map(c=><option key={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div className="field"><label className="label">중분류</label>
+                    <select className="inp" value={r.sub} disabled={!r.category}
+                      onChange={e=>setForm(p=>({...p,readiness:p.readiness.map((x,i)=>i===ri?{...x,sub:e.target.value}:x)}))}>
+                      <option value="">선택하세요</option>
+                      {(framework[r.category]?.items||[]).map(item=><option key={item}>{item}</option>)}
+                    </select>
+                  </div>
+                  <div className="field" style={{gridColumn:"1/-1"}}><label className="label">분류 근거 (선택)</label>
+                    <input className="inp" value={r.note} placeholder="분류 이유 50자 이내"
+                      onChange={e=>setForm(p=>({...p,readiness:p.readiness.map((x,i)=>i===ri?{...x,note:e.target.value}:x)}))} />
+                  </div>
+                </div>
+              )}
             </div>
-            <div className="field"><label className="label">중분류</label>
-              <select className="inp" value={form.primary_sub} onChange={e=>setForm(p=>({...p,primary_sub:e.target.value}))} disabled={!form.primary_category}>
-                <option value="">선택하세요</option>
-                {(framework[form.primary_category]?.items||[]).map(i=><option key={i}>{i}</option>)}
-              </select>
-            </div>
-            <div className="field" style={{gridColumn:"1/-1"}}><label className="label">분류 근거 (선택)</label>
-              <input className="inp" value={form.classification_note} onChange={e=>setForm(p=>({...p,classification_note:e.target.value}))} placeholder="분류 이유 50자 이내" />
-            </div>
-          </div>
-        )}
-        {useLLM && <p style={{ fontSize:12, color:"#334155" }}>저장 시 LLM이 자동으로 대분류/중분류를 분류합니다.</p>}
+          ))}
+          <button onClick={()=>setForm(p=>({...p,readiness:[...p.readiness,{alias:"",category:"",sub:"",note:""}]}))}
+            style={{ background:"transparent", border:"1px dashed #4a2a7a", borderRadius:8, color:"#a78bfa", padding:"10px", fontSize:13, cursor:"pointer", width:"100%", textAlign:"center" }}>
+            ＋ Readiness 분류 추가
+          </button>
+        </div>
       </div>
 
       {error && <div style={{ color:"#f87171", fontSize:13, padding:"10px 14px", background:"#1f0d0d", borderRadius:8, border:"1px solid #ef444430" }}>{error}</div>}
@@ -737,7 +806,7 @@ export default function App() {
             {/* 테이블 */}
             <div className="card" style={{ padding:0, overflow:"hidden" }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 14px", borderBottom:"1px solid #1e2d4a", background:"#080c18" }}>
-                <span style={{ fontSize:12, color:"#334155" }}>Task {filtered.length}건</span>
+                <span style={{ fontSize:12, color:"#64748b" }}>Task {filtered.length}건 <span style={{color:"#334155"}}>({filteredRows.length}행)</span></span>
                 <div style={{ position:"relative" }} ref={colPanelRef}>
                   <button onClick={()=>setShowColPanel(v=>!v)}
                     style={{ background:"transparent", border:"1px solid #1e2d4a", borderRadius:6, color:"#64748b", padding:"5px 12px", fontSize:12, cursor:"pointer" }}>
@@ -769,31 +838,37 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.length===0 ? (
+                    {filteredRows.length===0 ? (
                       <tr><td colSpan={3+visibleCols.length+2} style={{ padding:"48px 16px", textAlign:"center", color:"#334155", fontSize:13, background:"#0f1629" }}>
                         등록된 Task가 없습니다. <span style={{ color:"#4ECDC4", cursor:"pointer" }} onClick={()=>navTo("form")}>Task를 등록해보세요 →</span>
                       </td></tr>
-                    ) : filtered.map(t => {
-                      const catColor = framework[t.primary_category]?.color||"#64748b";
+                    ) : filteredRows.map(({t, r, ri}) => {
+                      const catColor = framework[r.category]?.color||"#64748b";
                       const st = statusMap[t.status]||{color:"#94a3b8",dot:"#64748b"};
                       const pr = priorityMap[t.priority]||{color:"#64748b"};
+                      const isAlias = ri > 0 && r.alias;
+                      const rowBg = isAlias ? "#0a0e1f" : undefined;
                       return (
-                        <tr key={t.id} className="tr-hover" style={{ cursor:"pointer" }} onClick={()=>openEdit(t)}>
+                        <tr key={`${t.id}-${ri}`} className="tr-hover" style={{ cursor:"pointer", opacity: isAlias ? 0.92 : 1 }} onClick={()=>openEdit(t)}>
                           {/* 대분류 */}
-                          <td style={{ ...tdStyle(), ...stickyLeft(0) }}>
-                            {t.primary_category ? (
-                              <span style={{ fontSize:13, fontWeight:700, color:catColor, display:"block", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:TH-20 }}>{t.primary_category}</span>
+                          <td style={{ ...tdStyle(rowBg?{background:rowBg}:{}), ...stickyLeft(0,rowBg?{background:rowBg}:{}) }}>
+                            {r.category ? (
+                              <span style={{ fontSize:13, fontWeight:700, color:catColor, display:"block", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:TH-20 }}>{r.category}</span>
                             ) : <span style={{ fontSize:13, color:"#64748b" }}>미분류</span>}
                           </td>
                           {/* 중분류 */}
-                          <td style={{ ...tdStyle(), ...stickyLeft(TH) }}>
-                            <div style={{ fontSize:12, color:"#64748b", fontFamily:"'DM Mono',monospace", marginBottom:2 }}>{t.primary_code}</div>
-                            <div style={{ fontSize:13, color:"#94a3b8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:TM-20 }}>{t.primary_sub||"-"}</div>
+                          <td style={{ ...tdStyle(rowBg?{background:rowBg}:{}), ...stickyLeft(TH,rowBg?{background:rowBg}:{}) }}>
+                            <div style={{ fontSize:12, color:"#64748b", fontFamily:"'DM Mono',monospace", marginBottom:2 }}>{r.code}</div>
+                            <div style={{ fontSize:13, color:"#94a3b8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:TM-20 }}>{r.sub||"-"}</div>
                           </td>
                           {/* Task명 */}
-                          <td style={{ ...tdStyle(), ...stickyLeft(TH+TM) }}>
-                            <div style={{ fontSize:12, color:"#4ECDC4", fontFamily:"'DM Mono',monospace", marginBottom:2 }}>{t.id}</div>
-                            <div style={{ fontSize:15, fontWeight:500, color:"#e2e8f0", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:TT-20 }}>{t.title}</div>
+                          <td style={{ ...tdStyle(rowBg?{background:rowBg}:{}), ...stickyLeft(TH+TM,rowBg?{background:rowBg}:{}) }}>
+                            <div style={{ fontSize:12, color:"#4ECDC4", fontFamily:"'DM Mono',monospace", marginBottom:2 }}>
+                              {t.id}{isAlias && <span style={{color:"#a78bfa",marginLeft:4}}>· {r.alias}</span>}
+                            </div>
+                            <div style={{ fontSize:15, fontWeight:500, color:"#e2e8f0", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:TT-20 }}>
+                              {isAlias ? <><span style={{color:"#a78bfa",fontWeight:600}}>{r.alias}</span><span style={{color:"#475569",margin:"0 5px"}}>—</span>{t.title}</> : t.title}
+                            </div>
                           </td>
                           {/* 선택 컬럼들 */}
                           {visibleCols.map(c=>{
@@ -802,16 +877,16 @@ export default function App() {
                             else if(c.key==="priority") val=<span style={{fontSize:14,fontWeight:600,color:pr.color}}>{t.priority}</span>;
                             else if(c.key==="due_date") val=<span style={{fontSize:14,color:"#94a3b8"}}>{t.due_date||"-"}</span>;
                             else val=<span style={{fontSize:14,color:"#cbd5e1",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"block",maxWidth:80}}>{t[c.key]||"-"}</span>;
-                            return <td key={c.key} style={tdStyle()}>{val}</td>;
+                            return <td key={c.key} style={tdStyle(rowBg?{background:rowBg}:{})}>{val}</td>;
                           })}
                           {/* Gantt */}
-                          <td style={{ ...tdStyle({ padding:"8px 10px" }), ...stickyRight(TB) }}>
-                            <GanttCell createdDate={t.created_date} dueDate={t.due_date} color={catColor} />
+                          <td style={{ ...tdStyle({ padding:"8px 10px", ...(rowBg?{background:rowBg}:{}) }), ...stickyRight(TB,rowBg?{background:rowBg}:{}) }}>
+                            <GanttCell startDate={t.start_date||t.created_date} dueDate={t.due_date} color={catColor} />
                           </td>
                           {/* 비고 */}
-                          <td style={{ ...tdStyle(), ...stickyRight(0) }}>
+                          <td style={{ ...tdStyle(rowBg?{background:rowBg}:{}), ...stickyRight(0,rowBg?{background:rowBg}:{}) }}>
                             <span style={{ fontSize:13, color:"#94a3b8", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", display:"block", maxWidth:TB-20 }}>{t.notes||"-"}</span>
-                            <button onClick={e=>{e.stopPropagation();downloadMD(t);}} style={{ marginTop:4, background:"transparent", border:"1px solid #1e2d4a", borderRadius:4, color:"#64748b", padding:"2px 8px", fontSize:12, cursor:"pointer" }}>↓ MD</button>
+                            {ri===0 && <button onClick={e=>{e.stopPropagation();downloadMD(t);}} style={{ marginTop:4, background:"transparent", border:"1px solid #1e2d4a", borderRadius:4, color:"#64748b", padding:"2px 8px", fontSize:12, cursor:"pointer" }}>↓ MD</button>}
                           </td>
                         </tr>
                       );
