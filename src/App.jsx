@@ -40,10 +40,18 @@ const OPTIONAL_COLS = [
 ];
 const DEFAULT_COL_CONFIG = OPTIONAL_COLS.map(c => ({ ...c, visible: false }));
 
+// ── LLM 설정 기본값 ──────────────────────────────────────────────
+const DEFAULT_LLM_CONFIG = {
+  provider: "claude",
+  claude:  { apiKey:"", model:"claude-sonnet-4-20250514" },
+  gemini:  { apiKey:"", model:"gemini-1.5-pro" },
+  openai:  { apiKey:"", model:"gpt-4o" },
+  onprem:  { baseUrl:"", model:"", apiKey:"" },
+};
+
 // ── LLM 분류 ──────────────────────────────────────────────────────
-async function classifyWithLLM(taskData, framework) {
-  const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("VITE_ANTHROPIC_API_KEY가 설정되지 않았습니다.");
+async function classifyWithLLM(taskData, framework, llmConfig = {}) {
+  const provider = llmConfig.provider || "claude";
   const frameworkText = Object.entries(framework)
     .map(([cat, { code, items }]) =>
       `[${cat}]\n${items.map((it, i) => `  ${code}-${String(i+1).padStart(2,"0")}: ${it}`).join("\n")}`)
@@ -61,15 +69,67 @@ ${frameworkText}
 
 === 출력 형식 (JSON만) ===
 {"primary_category":"카테고리명","primary_code":"코드","primary_sub":"세부분류명","classification_note":"분류 근거 (50자 이내)"}`;
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-calls":"true" },
-    body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:500, messages:[{role:"user",content:prompt}] }),
-  });
-  if (!res.ok) { const e = await res.json().catch(()=>({})); throw new Error(e?.error?.message||`API 오류 (${res.status})`); }
-  const data = await res.json();
-  const text = data.content?.map(b=>b.text||"").join("")||"";
-  return JSON.parse(text.replace(/```json|```/g,"").trim());
+
+  const parseJSON = (text) => JSON.parse(text.replace(/```json\n?|```/g,"").trim());
+
+  if (provider === "claude") {
+    const apiKey = llmConfig.claude?.apiKey || import.meta.env.VITE_ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error("Claude API 키가 설정되지 않았습니다.");
+    const model = llmConfig.claude?.model || "claude-sonnet-4-20250514";
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST",
+      headers:{"Content-Type":"application/json","x-api-key":apiKey,"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-calls":"true"},
+      body:JSON.stringify({model,max_tokens:500,messages:[{role:"user",content:prompt}]}),
+    });
+    if (!res.ok) { const e=await res.json().catch(()=>({})); throw new Error(e?.error?.message||`Claude API 오류 (${res.status})`); }
+    const data = await res.json();
+    return parseJSON(data.content?.map(b=>b.text||"").join("")||"");
+  }
+
+  if (provider === "gemini") {
+    const apiKey = llmConfig.gemini?.apiKey;
+    if (!apiKey) throw new Error("Gemini API 키가 설정되지 않았습니다.");
+    const model = llmConfig.gemini?.model || "gemini-1.5-pro";
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({contents:[{parts:[{text:prompt}]}],generationConfig:{maxOutputTokens:500}}),
+    });
+    if (!res.ok) { const e=await res.json().catch(()=>({})); throw new Error(e?.error?.message||`Gemini API 오류 (${res.status})`); }
+    const data = await res.json();
+    return parseJSON(data.candidates?.[0]?.content?.parts?.[0]?.text||"");
+  }
+
+  if (provider === "openai") {
+    const apiKey = llmConfig.openai?.apiKey;
+    if (!apiKey) throw new Error("OpenAI API 키가 설정되지 않았습니다.");
+    const model = llmConfig.openai?.model || "gpt-4o";
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method:"POST",
+      headers:{"Content-Type":"application/json","Authorization":`Bearer ${apiKey}`},
+      body:JSON.stringify({model,max_tokens:500,messages:[{role:"user",content:prompt}]}),
+    });
+    if (!res.ok) { const e=await res.json().catch(()=>({})); throw new Error(e?.error?.message||`OpenAI API 오류 (${res.status})`); }
+    const data = await res.json();
+    return parseJSON(data.choices?.[0]?.message?.content||"");
+  }
+
+  if (provider === "onprem") {
+    const baseUrl = llmConfig.onprem?.baseUrl?.replace(/\/+$/,"");
+    const model = llmConfig.onprem?.model;
+    if (!baseUrl||!model) throw new Error("On-prem 서버 URL과 모델명을 설정해주세요.");
+    const apiKey = llmConfig.onprem?.apiKey;
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method:"POST",
+      headers:{"Content-Type":"application/json",...(apiKey?{"Authorization":`Bearer ${apiKey}`}:{})},
+      body:JSON.stringify({model,max_tokens:500,messages:[{role:"user",content:prompt}]}),
+    });
+    if (!res.ok) { const e=await res.json().catch(()=>({})); throw new Error(e?.error?.message||`On-prem API 오류 (${res.status})`); }
+    const data = await res.json();
+    return parseJSON(data.choices?.[0]?.message?.content||"");
+  }
+
+  throw new Error("지원하지 않는 LLM 제공자입니다: " + provider);
 }
 
 // ── 유틸 ─────────────────────────────────────────────────────────
@@ -180,7 +240,7 @@ function LoginPage({ users, onLogin }) {
 // ═══════════════════════════════════════════════════════
 // AdminPage
 // ═══════════════════════════════════════════════════════
-function AdminPage({ framework, setFramework, statuses, setStatuses, priorities, setPriorities, efforts, setEfforts, users, setUsers, currentUser, onBack }) {
+function AdminPage({ framework, setFramework, statuses, setStatuses, priorities, setPriorities, efforts, setEfforts, users, setUsers, llmConfig, setLlmConfig, currentUser, onBack }) {
   const [tab, setTab] = useState("framework");
   const [selCat, setSelCat] = useState(Object.keys(framework)[0]);
   const [newCatName, setNewCatName] = useState(""); const [newCatCode, setNewCatCode] = useState(""); const [newCatColor, setNewCatColor] = useState("#4ECDC4");
@@ -231,7 +291,7 @@ function AdminPage({ framework, setFramework, statuses, setStatuses, priorities,
       </header>
       <main style={{ maxWidth:1100, margin:"0 auto", padding:"32px 24px" }}>
         <div style={{ display:"flex", gap:6, marginBottom:24 }}>
-          {[["framework","Readiness 카테고리"],["attrs","상태·우선순위·규모"],["users","사용자 관리"]].map(([t,l])=>(
+          {[["framework","Readiness 카테고리"],["attrs","상태·우선순위·규모"],["users","사용자 관리"],["llm","LLM 설정"]].map(([t,l])=>(
             <button key={t} onClick={()=>setTab(t)} style={tabStyle(t)}>{l}</button>
           ))}
         </div>
@@ -423,6 +483,116 @@ function AdminPage({ framework, setFramework, statuses, setStatuses, priorities,
             </div>
           </div>
         )}
+
+        {/* ── LLM 설정 ── */}
+        {tab==="llm" && (() => {
+          const PROVIDERS = [
+            { key:"claude",  label:"Claude",     color:"#FF6B9D", desc:"Anthropic Claude (claude.ai)" },
+            { key:"gemini",  label:"Gemini",      color:"#4ECDC4", desc:"Google Gemini API" },
+            { key:"openai",  label:"ChatGPT",     color:"#FFE66D", desc:"OpenAI GPT API" },
+            { key:"onprem",  label:"On-prem",     color:"#A8E6CF", desc:"OpenAI 호환 자체 서버 (Ollama 등)" },
+          ];
+          const cur = llmConfig.provider || "claude";
+          const upd = (provider, key, val) => setLlmConfig(p => ({ ...p, [provider]: { ...p[provider], [key]:val } }));
+
+          const fieldStyle = { width:"100%", background:"#0a0f1e", border:"1px solid #1e2d4a", borderRadius:6, color:"#e2e8f0", padding:"9px 12px", fontSize:13 };
+          const labelStyle = { fontSize:11, color:"#64748b", fontWeight:600, textTransform:"uppercase", letterSpacing:".06em", marginBottom:5, display:"block" };
+
+          return (
+            <div style={{ maxWidth:680 }}>
+              {/* Provider 선택 */}
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:24 }}>
+                {PROVIDERS.map(({key,label,color,desc})=>(
+                  <button key={key} onClick={()=>setLlmConfig(p=>({...p,provider:key}))}
+                    style={{ background:cur===key?`${color}18`:"#0f1629", border:`1px solid ${cur===key?color:"#1e2d4a"}`, borderRadius:10, padding:"14px 10px", cursor:"pointer", textAlign:"center", transition:"all .2s" }}>
+                    <div style={{ fontSize:14, fontWeight:700, color:cur===key?color:"#94a3b8", marginBottom:4 }}>{label}</div>
+                    <div style={{ fontSize:10, color:"#475569", lineHeight:1.4 }}>{desc}</div>
+                    {cur===key && <div style={{ width:6, height:6, borderRadius:"50%", background:color, margin:"8px auto 0" }} />}
+                  </button>
+                ))}
+              </div>
+
+              {/* 설정 필드 */}
+              <div style={{ background:"#0f1629", border:"1px solid #1e2d4a", borderRadius:12, padding:24, display:"flex", flexDirection:"column", gap:16 }}>
+                {cur==="claude" && (<>
+                  <div>
+                    <label style={labelStyle}>API Key</label>
+                    <input type="password" style={fieldStyle} placeholder="sk-ant-…" value={llmConfig.claude?.apiKey||""}
+                      onChange={e=>upd("claude","apiKey",e.target.value)} />
+                    <div style={{ fontSize:11, color:"#334155", marginTop:5 }}>비워두면 환경변수 VITE_ANTHROPIC_API_KEY를 사용합니다.</div>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>모델</label>
+                    <select style={fieldStyle} value={llmConfig.claude?.model||"claude-sonnet-4-20250514"} onChange={e=>upd("claude","model",e.target.value)}>
+                      <option value="claude-opus-4-7">claude-opus-4-7 (최고 성능)</option>
+                      <option value="claude-sonnet-4-6">claude-sonnet-4-6 (권장)</option>
+                      <option value="claude-sonnet-4-20250514">claude-sonnet-4-20250514</option>
+                      <option value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001 (빠름)</option>
+                    </select>
+                  </div>
+                </>)}
+
+                {cur==="gemini" && (<>
+                  <div>
+                    <label style={labelStyle}>API Key</label>
+                    <input type="password" style={fieldStyle} placeholder="AIzaSy…" value={llmConfig.gemini?.apiKey||""}
+                      onChange={e=>upd("gemini","apiKey",e.target.value)} />
+                    <div style={{ fontSize:11, color:"#334155", marginTop:5 }}>Google AI Studio에서 발급한 API 키를 입력하세요.</div>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>모델</label>
+                    <select style={fieldStyle} value={llmConfig.gemini?.model||"gemini-1.5-pro"} onChange={e=>upd("gemini","model",e.target.value)}>
+                      <option value="gemini-2.5-pro-preview-06-05">gemini-2.5-pro-preview (최고 성능)</option>
+                      <option value="gemini-2.0-flash">gemini-2.0-flash (빠름)</option>
+                      <option value="gemini-1.5-pro">gemini-1.5-pro (권장)</option>
+                      <option value="gemini-1.5-flash">gemini-1.5-flash (빠름)</option>
+                    </select>
+                  </div>
+                </>)}
+
+                {cur==="openai" && (<>
+                  <div>
+                    <label style={labelStyle}>API Key</label>
+                    <input type="password" style={fieldStyle} placeholder="sk-…" value={llmConfig.openai?.apiKey||""}
+                      onChange={e=>upd("openai","apiKey",e.target.value)} />
+                    <div style={{ fontSize:11, color:"#334155", marginTop:5 }}>OpenAI Platform에서 발급한 API 키를 입력하세요.</div>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>모델</label>
+                    <select style={fieldStyle} value={llmConfig.openai?.model||"gpt-4o"} onChange={e=>upd("openai","model",e.target.value)}>
+                      <option value="gpt-4o">gpt-4o (권장)</option>
+                      <option value="gpt-4o-mini">gpt-4o-mini (빠름/저렴)</option>
+                      <option value="gpt-4-turbo">gpt-4-turbo</option>
+                      <option value="o3-mini">o3-mini</option>
+                    </select>
+                  </div>
+                </>)}
+
+                {cur==="onprem" && (<>
+                  <div>
+                    <label style={labelStyle}>서버 Base URL</label>
+                    <input style={fieldStyle} placeholder="http://localhost:11434/v1" value={llmConfig.onprem?.baseUrl||""}
+                      onChange={e=>upd("onprem","baseUrl",e.target.value)} />
+                    <div style={{ fontSize:11, color:"#334155", marginTop:5 }}>OpenAI 호환 엔드포인트 (Ollama: :11434/v1, vLLM: :8000/v1 등)</div>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>모델명</label>
+                    <input style={fieldStyle} placeholder="llama3, qwen2, mistral …" value={llmConfig.onprem?.model||""}
+                      onChange={e=>upd("onprem","model",e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>API Key (선택)</label>
+                    <input type="password" style={fieldStyle} placeholder="인증이 필요한 서버만 입력" value={llmConfig.onprem?.apiKey||""}
+                      onChange={e=>upd("onprem","apiKey",e.target.value)} />
+                  </div>
+                </>)}
+              </div>
+              <div style={{ marginTop:10, padding:"10px 14px", background:"#0f1629", border:"1px solid #1e2d4a40", borderRadius:8, fontSize:11, color:"#334155" }}>
+                ⚠ API 키는 브라우저 localStorage에 저장됩니다. 공용 PC에서는 사용 후 키를 삭제하세요.
+              </div>
+            </div>
+          );
+        })()}
       </main>
     </div>
   );
@@ -471,6 +641,7 @@ export default function App() {
   const [users, setUsers] = useState(() => { try { const s=localStorage.getItem("ai_users"); return s?JSON.parse(s):DEFAULT_USERS; } catch { return DEFAULT_USERS; } });
   const [tasks, setTasks] = useState(() => { try { const s=JSON.parse(localStorage.getItem("ai_tasks")||"[]"); return s.length>0?s:SEED_TASKS; } catch { return SEED_TASKS; } });
   const [colConfig, setColConfig] = useState(() => { try { const s=localStorage.getItem("ai_col_config"); return s?JSON.parse(s):DEFAULT_COL_CONFIG; } catch { return DEFAULT_COL_CONFIG; } });
+  const [llmConfig, setLlmConfig] = useState(() => { try { const s=localStorage.getItem("ai_llm_config"); return s?{...DEFAULT_LLM_CONFIG,...JSON.parse(s)}:DEFAULT_LLM_CONFIG; } catch { return DEFAULT_LLM_CONFIG; } });
   const [view, setView] = useState("dashboard");
   const [form, setForm] = useState(emptyForm());
   const [selectedTask, setSelectedTask] = useState(null);
@@ -486,6 +657,7 @@ export default function App() {
 
   useEffect(() => { localStorage.setItem("ai_tasks", JSON.stringify(tasks)); }, [tasks]);
   useEffect(() => { localStorage.setItem("ai_col_config", JSON.stringify(colConfig)); }, [colConfig]);
+  useEffect(() => { localStorage.setItem("ai_llm_config", JSON.stringify(llmConfig)); }, [llmConfig]);
   useEffect(() => { if(currentUser) localStorage.setItem("ai_current_user", JSON.stringify(currentUser)); else localStorage.removeItem("ai_current_user"); }, [currentUser]);
 
   // 외부 클릭 시 컬럼 패널 닫기
@@ -504,6 +676,7 @@ export default function App() {
       priorities={priorities} setPriorities={setPriorities}
       efforts={efforts} setEfforts={setEfforts}
       users={users} setUsers={setUsers}
+      llmConfig={llmConfig} setLlmConfig={setLlmConfig}
       currentUser={currentUser}
       onBack={()=>setView("dashboard")} />
   );
@@ -531,7 +704,7 @@ export default function App() {
     if (useLLM) {
       setClassifying(true);
       try {
-        const cls = await classifyWithLLM(form, framework);
+        const cls = await classifyWithLLM(form, framework, llmConfig);
         setClassResult(cls);
         const r0 = { alias:form.readiness[0].alias||"", category:cls.primary_category, code:cls.primary_code||getPrimaryCode(cls.primary_category,cls.primary_sub,framework), sub:cls.primary_sub, note:cls.classification_note };
         setTasks(p=>[{...base, readiness:[r0,...base.readiness.slice(1)]},...p]);
@@ -561,7 +734,7 @@ export default function App() {
     if (useLLM) {
       setClassifying(true);
       try {
-        const cls = await classifyWithLLM(form, framework);
+        const cls = await classifyWithLLM(form, framework, llmConfig);
         setClassResult(cls);
         const r0 = { alias:form.readiness[0].alias||"", category:cls.primary_category, code:cls.primary_code||getPrimaryCode(cls.primary_category,cls.primary_sub,framework), sub:cls.primary_sub, note:cls.classification_note };
         apply([r0, ...buildReadiness(form.readiness.slice(1))]);
@@ -646,6 +819,10 @@ export default function App() {
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
           <div className="section-title" style={{marginBottom:0,color:"#C3A6FF"}}>Readiness 분류</div>
           <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            {useLLM && <span style={{ fontSize:10, color:"#64748b", background:"#0a0f1e", border:"1px solid #1e2d4a", borderRadius:6, padding:"2px 8px", fontFamily:"monospace" }}>
+              {llmConfig.provider==="claude"?"Claude":llmConfig.provider==="gemini"?"Gemini":llmConfig.provider==="openai"?"ChatGPT":"On-prem"}
+              {" · "}{llmConfig[llmConfig.provider]?.model||"-"}
+            </span>}
             <span style={{ fontSize:11, color:useLLM?"#4ECDC4":"#475569" }}>LLM 자동분류</span>
             <button onClick={()=>setUseLLM(v=>!v)} style={{ width:40, height:22, borderRadius:11, background:useLLM?"#4ECDC4":"#1e2d4a", border:"none", cursor:"pointer", position:"relative" }}>
               <span style={{ position:"absolute", top:3, left:useLLM?20:3, width:16, height:16, borderRadius:"50%", background:"#fff", transition:"left .2s", display:"block" }} />
