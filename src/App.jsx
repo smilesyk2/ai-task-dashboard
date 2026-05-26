@@ -650,7 +650,7 @@ export default function App() {
   // ── 렌더 ────────────────────────────────────────────
   const TH = 90, TM = 140, TT = 200, TG = 280, TB = 120;
 
-  const thStyle = (extra={}) => ({ padding:"10px 12px", fontSize:10, fontWeight:600, textTransform:"uppercase", letterSpacing:".08em", color:"#334155", background:"#080c18", borderBottom:"1px solid #1e2d4a", whiteSpace:"nowrap", ...extra });
+  const thStyle = (extra={}) => ({ padding:"10px 12px", fontSize:12, fontWeight:600, textTransform:"uppercase", letterSpacing:".08em", color:"#64748b", background:"#080c18", borderBottom:"1px solid #1e2d4a", whiteSpace:"nowrap", ...extra });
   const tdStyle = (extra={}) => ({ padding:"10px 12px", borderBottom:"1px solid #0c1120", verticalAlign:"middle", background:"#0f1629", ...extra });
   const stickyLeft = (left, extra={}) => ({ position:"sticky", left, zIndex:2, ...extra });
   const stickyRight = (right, extra={}) => ({ position:"sticky", right, zIndex:2, ...extra });
@@ -735,7 +735,7 @@ export default function App() {
             </div>
 
             {/* 테이블 */}
-            <div className="card" style={{ padding:0, overflow:"hidden" }}>
+            <div className="card" style={{ padding:0, overflow:"visible" }}>
               <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"10px 14px", borderBottom:"1px solid #1e2d4a", background:"#080c18" }}>
                 <span style={{ fontSize:12, color:"#334155" }}>Task {filtered.length}건</span>
                 <div style={{ position:"relative" }} ref={colPanelRef}>
@@ -747,7 +747,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div style={{ overflowX:"auto" }}>
+              <div style={{ overflowX:"auto", borderRadius:"0 0 12px 12px" }}>
                 <table style={{ borderCollapse:"collapse", minWidth:"max-content", width:"100%" }}>
                   <thead>
                     <tr>
@@ -761,7 +761,7 @@ export default function App() {
                       <th style={{ ...thStyle(), ...stickyRight(TB,{ background:"#080c18" }), width:TG, minWidth:TG, padding:"0 0" }}>
                         <div style={{ display:"flex", height:"100%", alignItems:"stretch" }}>
                           {["26.1Q","26.2Q","26.3Q","26.4Q"].map((q,i)=>(
-                            <div key={q} style={{ flex:1, borderLeft:i>0?"1px solid #1e2d4a":undefined, display:"flex", alignItems:"center", justifyContent:"center", padding:"10px 0", fontSize:9, fontWeight:700, color:"#334155", letterSpacing:".06em" }}>{q}</div>
+                            <div key={q} style={{ flex:1, borderLeft:i>0?"1px solid #1e2d4a":undefined, display:"flex", alignItems:"center", justifyContent:"center", padding:"10px 0", fontSize:11, fontWeight:700, color:"#64748b", letterSpacing:".06em" }}>{q}</div>
                           ))}
                         </div>
                       </th>
@@ -782,26 +782,26 @@ export default function App() {
                           {/* 대분류 */}
                           <td style={{ ...tdStyle(), ...stickyLeft(0) }}>
                             {t.primary_category ? (
-                              <span style={{ fontSize:11, fontWeight:700, color:catColor, display:"block", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:TH-20 }}>{t.primary_category}</span>
-                            ) : <span style={{ fontSize:11, color:"#334155" }}>미분류</span>}
+                              <span style={{ fontSize:13, fontWeight:700, color:catColor, display:"block", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:TH-20 }}>{t.primary_category}</span>
+                            ) : <span style={{ fontSize:13, color:"#64748b" }}>미분류</span>}
                           </td>
                           {/* 중분류 */}
                           <td style={{ ...tdStyle(), ...stickyLeft(TH) }}>
-                            <div style={{ fontSize:10, color:"#334155", fontFamily:"'DM Mono',monospace", marginBottom:2 }}>{t.primary_code}</div>
-                            <div style={{ fontSize:11, color:"#475569", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:TM-20 }}>{t.primary_sub||"-"}</div>
+                            <div style={{ fontSize:12, color:"#64748b", fontFamily:"'DM Mono',monospace", marginBottom:2 }}>{t.primary_code}</div>
+                            <div style={{ fontSize:13, color:"#8ba5c0", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:TM-20 }}>{t.primary_sub||"-"}</div>
                           </td>
                           {/* Task명 */}
                           <td style={{ ...tdStyle(), ...stickyLeft(TH+TM) }}>
-                            <div style={{ fontSize:10, color:"#4ECDC4", fontFamily:"'DM Mono',monospace", marginBottom:2 }}>{t.id}</div>
-                            <div style={{ fontSize:13, fontWeight:500, color:"#e2e8f0", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:TT-20 }}>{t.title}</div>
+                            <div style={{ fontSize:12, color:"#4ECDC4", fontFamily:"'DM Mono',monospace", marginBottom:2 }}>{t.id}</div>
+                            <div style={{ fontSize:15, fontWeight:500, color:"#e2e8f0", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", maxWidth:TT-20 }}>{t.title}</div>
                           </td>
                           {/* 선택 컬럼들 */}
                           {visibleCols.map(c=>{
                             let val;
-                            if(c.key==="status") val=<span className="pill" style={{background:`${st.dot}18`,color:st.color,border:`1px solid ${st.dot}30`}}><span style={{width:5,height:5,borderRadius:"50%",background:st.dot,display:"inline-block"}}/>{t.status}</span>;
-                            else if(c.key==="priority") val=<span style={{fontSize:12,fontWeight:600,color:pr.color}}>{t.priority}</span>;
-                            else if(c.key==="due_date") val=<span style={{fontSize:12,color:"#64748b"}}>{t.due_date||"-"}</span>;
-                            else val=<span style={{fontSize:12,color:"#94a3b8",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"block",maxWidth:80}}>{t[c.key]||"-"}</span>;
+                            if(c.key==="status") val=<span className="pill" style={{background:`${st.dot}18`,color:st.color,border:`1px solid ${st.dot}30`,fontSize:13}}><span style={{width:6,height:6,borderRadius:"50%",background:st.dot,display:"inline-block"}}/>{t.status}</span>;
+                            else if(c.key==="priority") val=<span style={{fontSize:14,fontWeight:600,color:pr.color}}>{t.priority}</span>;
+                            else if(c.key==="due_date") val=<span style={{fontSize:13,color:"#8ba5c0"}}>{t.due_date||"-"}</span>;
+                            else val=<span style={{fontSize:13,color:"#b8c8dc",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",display:"block",maxWidth:80}}>{t[c.key]||"-"}</span>;
                             return <td key={c.key} style={tdStyle()}>{val}</td>;
                           })}
                           {/* Gantt */}
@@ -810,8 +810,8 @@ export default function App() {
                           </td>
                           {/* 비고 */}
                           <td style={{ ...tdStyle(), ...stickyRight(0) }}>
-                            <span style={{ fontSize:11, color:"#475569", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", display:"block", maxWidth:TB-20 }}>{t.notes||"-"}</span>
-                            <button onClick={e=>{e.stopPropagation();downloadMD(t);}} style={{ marginTop:4, background:"transparent", border:"1px solid #1e2d4a", borderRadius:4, color:"#334155", padding:"2px 8px", fontSize:11, cursor:"pointer" }}>↓ MD</button>
+                            <span style={{ fontSize:13, color:"#8ba5c0", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis", display:"block", maxWidth:TB-20 }}>{t.notes||"-"}</span>
+                            <button onClick={e=>{e.stopPropagation();downloadMD(t);}} style={{ marginTop:4, background:"transparent", border:"1px solid #1e2d4a", borderRadius:4, color:"#64748b", padding:"2px 8px", fontSize:12, cursor:"pointer" }}>↓ MD</button>
                           </td>
                         </tr>
                       );
